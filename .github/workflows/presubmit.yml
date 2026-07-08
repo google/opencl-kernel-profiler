@@ -37,7 +37,7 @@ jobs:
       - name: Clone dependencies
         run: |
           git clone --depth 1 --branch v51.2 https://github.com/google/perfetto third_party/perfetto
-          git clone --depth 1 --branch v2024.05.08 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
+          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
       - name: Download and extract Android NDK
         run: |
           wget https://dl.google.com/android/repository/android-ndk-r27d-linux.zip -O android-ndk.zip
@@ -66,7 +66,7 @@ jobs:
       - name: Clone dependencies
         run: |
           git clone --depth 1 --branch v51.2 https://github.com/google/perfetto third_party/perfetto
-          git clone --depth 1 --branch v2024.05.08 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
+          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
       - name: Build
         shell: bash
         run: |
@@ -88,7 +88,7 @@ jobs:
           git clone --depth 1 --branch v51.2 https://github.com/google/perfetto third_party/perfetto
           git -C third_party/perfetto apply ../../.github/workflows/perfetto_mingw.patch
           git -C third_party/perfetto apply ../../.github/workflows/header_mingw.patch
-          git clone --depth 1 --branch v2024.05.08 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
+          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
       - name: Build
         shell: bash
         run: |
@@ -122,8 +122,8 @@ jobs:
           $(pwd)/third_party/perfetto/tools/ninja -C $(pwd)/third_party/perfetto/out/linux_clang_release trace_processor_shell
       - name: Build OpenCL-ICD-Loader
         run: |
-          git clone --depth 1 --branch v2024.05.08 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
-          git clone --depth 1 --branch v2024.05.08 https://github.com/KhronosGroup/OpenCL-ICD-Loader.git third_party/opencl-icd-loader
+          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
+          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-ICD-Loader.git third_party/opencl-icd-loader
           cmake -B third_party/opencl-icd-loader/build -S third_party/opencl-icd-loader -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DOPENCL_ICD_LOADER_HEADERS_DIR=$(pwd)/third_party/opencl-headers \
