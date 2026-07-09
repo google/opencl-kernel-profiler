@@ -52,7 +52,7 @@ PERFETTO_DEFINE_CATEGORIES(perfetto::Category(CLKP_PERFETTO_CATEGORY).SetDescrip
 PERFETTO_TRACK_EVENT_STATIC_STORAGE();
 
 #ifdef BACKEND_INPROCESS
-static std::unique_ptr<perfetto::TracingSession> gTracingSession;
+static perfetto::TracingSession *gTracingSession;
 #endif
 
 /*****************************************************************************/
@@ -524,11 +524,12 @@ CL_API_ENTRY cl_int CL_API_CALL clGetLayerInfo(
     return CL_SUCCESS;
 }
 
-void clDeinitLayer()
+CL_API_ENTRY cl_int CL_API_CALL clDeinitLayer()
 {
 #ifdef BACKEND_INPROCESS
     gTracingSession->StopBlocking();
     std::vector<char> trace_data(gTracingSession->ReadTraceBlocking());
+    delete gTracingSession;
 
     std::ofstream output;
     output.open(get_trace_dest(), std::ios::out | std::ios::binary);
@@ -537,10 +538,11 @@ void clDeinitLayer()
 #else
     perfetto::TrackEvent::Flush();
 #endif
+    return 0;
 }
 
-CL_API_ENTRY cl_int CL_API_CALL clInitLayer(cl_uint num_entries, const struct _cl_icd_dispatch *target_dispatch,
-    cl_uint *num_entries_out, const struct _cl_icd_dispatch **layer_dispatch_ret)
+CL_API_ENTRY cl_int CL_API_CALL clInitLayerWithProperties(cl_uint num_entries, const cl_icd_dispatch *target_dispatch,
+    cl_uint *num_entries_out, const cl_icd_dispatch **layer_dispatch_ret, const cl_layer_properties *properties)
 {
     std::lock_guard<std::mutex> lock(g_lock);
     if (!target_dispatch || !num_entries_out || !layer_dispatch_ret)
@@ -565,7 +567,7 @@ CL_API_ENTRY cl_int CL_API_CALL clInitLayer(cl_uint num_entries, const struct _c
     ds_cfg->set_name("track_event");
     ds_cfg->set_track_event_config_raw(track_event_cfg.SerializeAsString());
 
-    gTracingSession = perfetto::Tracing::NewTrace();
+    gTracingSession = perfetto::Tracing::NewTrace().release();
     gTracingSession->Setup(cfg);
     gTracingSession->StartBlocking();
 #endif
@@ -593,8 +595,11 @@ CL_API_ENTRY cl_int CL_API_CALL clInitLayer(cl_uint num_entries, const struct _c
     *layer_dispatch_ret = &dispatch;
     *num_entries_out = sizeof(dispatch) / sizeof(dispatch.clGetPlatformIDs);
 
-    bool atexit_registered = atexit(clDeinitLayer) == 0;
-    CHECK(atexit_registered, return CL_OUT_OF_RESOURCES, "Could not register clDeinitLayer using atexit()");
-
     return CL_SUCCESS;
+}
+
+CL_API_ENTRY cl_int CL_API_CALL clInitLayer(cl_uint num_entries, const struct _cl_icd_dispatch *target_dispatch,
+    cl_uint *num_entries_out, const struct _cl_icd_dispatch **layer_dispatch_ret)
+{
+    return clInitLayerWithProperties(num_entries, target_dispatch, num_entries_out, layer_dispatch_ret, nullptr);
 }
