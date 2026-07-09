@@ -52,7 +52,7 @@ PERFETTO_DEFINE_CATEGORIES(perfetto::Category(CLKP_PERFETTO_CATEGORY).SetDescrip
 PERFETTO_TRACK_EVENT_STATIC_STORAGE();
 
 #ifdef BACKEND_INPROCESS
-static std::unique_ptr<perfetto::TracingSession> gTracingSession;
+static perfetto::TracingSession *gTracingSession;
 #endif
 
 /*****************************************************************************/
@@ -529,6 +529,7 @@ CL_API_ENTRY cl_int CL_API_CALL clDeinitLayer()
 #ifdef BACKEND_INPROCESS
     gTracingSession->StopBlocking();
     std::vector<char> trace_data(gTracingSession->ReadTraceBlocking());
+    delete gTracingSession;
 
     std::ofstream output;
     output.open(get_trace_dest(), std::ios::out | std::ios::binary);
@@ -566,7 +567,7 @@ CL_API_ENTRY cl_int CL_API_CALL clInitLayerWithProperties(cl_uint num_entries, c
     ds_cfg->set_name("track_event");
     ds_cfg->set_track_event_config_raw(track_event_cfg.SerializeAsString());
 
-    gTracingSession = perfetto::Tracing::NewTrace();
+    gTracingSession = perfetto::Tracing::NewTrace().release();
     gTracingSession->Setup(cfg);
     gTracingSession->StartBlocking();
 #endif
