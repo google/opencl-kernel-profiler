@@ -23,27 +23,29 @@ This is not an officially supported Google product. This project is not eligible
 
 `opencl-kernel-profiler` uses CMake for its build system.
 
-To compile it, please run:
-```
-cmake -B <build_dir> -S <path-to-opencl-kernel-profiler> -DOPENCL_HEADER_PATH=<path-to-opencl-header> -DPERFETTO_SDK_PATH<path-to-perfetto-sdk>
+To compile it, run:
+```bash
+cmake -B <build_dir> -S <path-to-opencl-kernel-profiler> \
+  -DOPENCL_HEADER_PATH=<path-to-opencl-header> \
+  -DPERFETTO_SDK_PATH=<path-to-perfetto-sdk>
 cmake --build <build_dir>
 ```
 
-For real life examples, have a look at:
+For real-world examples, see:
 - ChromeOS [ebuild](https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/dev-libs/opencl-kernel-profiler/opencl-kernel-profiler-0.0.1.ebuild)
-- Github presubmit [configuration](https://github.com/rjodinchr/opencl-kernel-profiler/blob/main/.github/workflows/presubmit.yml)
+- GitHub presubmit [configuration](https://github.com/rjodinchr/opencl-kernel-profiler/blob/main/.github/workflows/presubmit.yml)
 
-# Build options
+# Build Options
 
-* `PERFETTO_SDK_PATH` (REQUIRED): path to [perfetto](https://github.com/google/perfetto) sdk (`opencl-kernel-profiler` is looking for `PERFETTO_SDK_PATH/perfetto.cc` and `PERFETTO_SDK_PATH/perfetto.h`).
-* `PERFETTO_LIBRARY`: name of a perfetto library already available (avoid having to compile `perfetto.cc`).
-* `OPENCL_HEADER_PATH`: path to [OpenCL-Headers](https://github.com/KhronosGroup/OpenCL-Headers).
-* `BACKEND`: [perfetto](https://github.com/google/perfetto) backend to use
-  * `InProcess` (default): the application will generate the traces ([perfetto documentation](https://perfetto.dev/docs/instrumentation/tracing-sdk#in-process-mode)). Build options and environment variables can be used to control the maximum size of traces and the destination file where the traces will be recorded.
-  * `System`: perfetto `traced` daemon will be responsible for generating the traces ([perfetto documentation](https://perfetto.dev/docs/instrumentation/tracing-sdk#system-mode)).
-* `TRACE_MAX_SIZE` (only with `InProcess` backend): Maximum size (in KB) of traces that can be recorded. Can be overriden at runtime using the following environment variable: `CLKP_TRACE_MAX_SIZE` (Default: `1024`).
-* `TRACE_DEST` (only with `InProcess` backend): File where the traces will be recorded. Can be overriden at runtime using the following environment variable: `CLKP_TRACE_DEST` (Default: `opencl-kernel-profiler.trace`).
-* `SPIRV_DISASSEMBLY` (optional): Enable SPIR-V disassembly in the traces. This option requires the [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) library
+* `PERFETTO_SDK_PATH` (REQUIRED): Path to [perfetto](https://github.com/google/perfetto) SDK (expects `perfetto.cc` and `perfetto.h` in this directory).
+* `PERFETTO_LIBRARY`: Name of an existing perfetto library to link against (avoids compiling `perfetto.cc`).
+* `OPENCL_HEADER_PATH`: Path to [OpenCL-Headers](https://github.com/KhronosGroup/OpenCL-Headers).
+* `BACKEND`: Perfetto backend to use:
+  * `InProcess` (default): The application generates the traces directly ([Perfetto In-Process Mode](https://perfetto.dev/docs/instrumentation/tracing-sdk#in-process-mode)).
+  * `System`: The system-wide Perfetto daemon (`traced`) collects the traces ([Perfetto System Mode](https://perfetto.dev/docs/instrumentation/tracing-sdk#system-mode)).
+* `TRACE_MAX_SIZE` (InProcess only): Default maximum trace buffer size in KB. Can be overridden at runtime. (Default: `1024`).
+* `TRACE_DEST` (InProcess only): Default file path for the trace. Can be overridden at runtime. (Default: `opencl-kernel-profiler.trace`).
+* `SPIRV_DISASSEMBLY` (optional): Enables SPIR-V disassembly in traces. Requires [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools).
 
 # Running with OpenCL Kernel Profiler
 
@@ -62,43 +64,65 @@ Then run the application using `opencl-kernel-profiler.sh`. This script will tak
 ## On Android
 
 * Clone the project under `<aosp>/external/opencl-kernel-profiler`
-* Compile the project through Soong (Android build system):
-```
-<aosp> $ mmm external/opencl-kernel-profiler
-```
-* Copy the library as well as the `.lay` file:
-```
-<aosp> $ adb push $OUT/vendor/lib64/opencl-kernel-profiler.so /vendor/lib64/
-<aosp> $ adb push $OUT/vendor/etc/Khronos/OpenCL/layers/opencl-kernel-profiler.lay /vendor/etc/Khronos/OpenCL/layers/
-```
+* Compile the project:
+  ```bash
+  m opencl-kernel-profiler
+  ```
+* Push the library and the `.lay` file to the device. Note that `/vendor` partition is usually read-only, so you may need to remount it first:
+  ```bash
+  adb root
+  adb disable-verity
+  adb reboot
+  # Wait for the device to reboot, then:
+  adb root
+  adb remount
+  adb push $OUT/vendor/lib64/opencl-kernel-profiler.so /vendor/lib64/
+  adb push $OUT/vendor/etc/Khronos/OpenCL/layers/opencl-kernel-profiler.lay /vendor/etc/Khronos/OpenCL/layers/
+  ```
 
 Any application using the `OpenCL-ICD-Loader` will go through the `opencl-kernel-profiler`.
 
-# Using the trace
+# Environment Variables
 
-Once traces have been generated, on can view them using the [perfetto trace viewer](https://ui.perfetto.dev).
+The profiler can be configured at runtime using the following environment variables:
 
-It is also possible to make SQL queries using the [trace_processor](https://perfetto.dev/docs/analysis/trace-processor) tool of perfetto.
-[Link](https://perfetto.dev/docs/quickstart/trace-analysis) to perfetto quickststart with SQL-based analysis.
+* `CLKP_TRACE_DEST` (InProcess backend only): File path where the Perfetto trace will be saved. (Default: `opencl-kernel-profiler.trace`).
+* `CLKP_TRACE_MAX_SIZE` (InProcess backend only): Maximum size of the trace buffer in KB. (Default: `1024`).
+* `CLKP_KERNEL_DIR`: Directory path where kernel sources, binaries, and IL will be dumped. If not set, dumping is disabled.
 
-Here is simple example to extract every kernel source code from the trace:
+# Using the Trace
+
+Once traces have been generated, one can view them using the [Perfetto Trace Viewer](https://ui.perfetto.dev).
+
+It is also possible to make SQL queries using the [trace_processor](https://perfetto.dev/docs/analysis/trace-processor) tool.
+See the [Perfetto SQL Analysis Quickstart](https://perfetto.dev/docs/quickstart/trace-analysis).
+
+Here is a simple example to extract all kernel sources from a trace:
+```bash
+echo "SELECT EXTRACT_ARG(arg_set_id, 'debug.string') FROM slice WHERE slice.name='clCreateProgramWithSource-args'" \
+  | ./trace_processor -q /dev/stdin <opencl-kernel-profiler.trace>
 ```
-echo "SELECT EXTRACT_ARG(arg_set_id, 'debug.string') FROM slice WHERE slice.name='clCreateProgramWithSource-args'" | ./trace_processor -q /dev/stdin <opencl-kernel-profiler.trace>
-```
 
-# Extracting the kernel sources without perfetto
+# Dumping Kernel Sources to Disk
 
-Running an application without perfetto but with the opencl-kernel-profiler layer enabled will dump the kernel sources code inside the directory pointed by `CLKP_KERNEL_DIR`. If `CLKP_KERNEL_DIR` is not set, nothing get written on disk.
+If `CLKP_KERNEL_DIR` is set, the profiler dumps all programs/kernels to disk:
+* OpenCL C sources are saved with a `.cl` extension.
+* Compiled binaries are saved with a `.bin` extension.
+* Intermediate Language (IL) is saved with `.spv` (for SPIR-V) or `.il` extension.
+* SPIR-V disassembly is saved with `.spvasm` extension (if `SPIRV_DISASSEMBLY` is enabled).
 
-# How does it work
+If `CLKP_KERNEL_DIR` is not set, no files are written. This dumping occurs independently of Perfetto tracing.
 
-`opencl-kernel-profiler` intercept to following calls to generate perfetto traces:
+# How it Works
 
-* `clCreateCommandQueue`: it modifies `properties` to enable profiling (`CL_QUEUE_PROFILING_ENABLE`).
-* `clCreateCommandQueueWithProperties`: it adds `CL_QUEUE_PROPERTIES` with `CL_QUEUE_PROFILING_ENABLE`, or just set `CL_QUEUE_PROFILING_ENABLE` if `CL_QUEUE_PROPERTIES` is already set.
-* `clCreateProgramWithSource`: it creates instant traces with the program source strings and initializes internal structures.
-* `clCreateProgramWithIL`: it initializes internal structures. If SPIRV-V disassembly is supported and the program is SPIRV-V, it also creates instant traces with the program SPIRV-V disassembly.
-* `clCreateKernel`: it initializes internal structures.
-* `clEnqueueNDRangekernel`: it creates a callback on the kernel completion. The callback will create traces with the proper timestamp for the kernel using timestamp coming from `clGetEventProfilinginfo`.
+The layer intercepts the following OpenCL APIs to instrument execution and dump resources:
 
-Every intercept call also generates a trace for the function.
+* `clCreateCommandQueue` / `clCreateCommandQueueWithProperties`: Forces `CL_QUEUE_PROFILING_ENABLE` to ensure hardware timestamps are available.
+* `clCreateProgramWithSource`: Emits the source code to the trace (as an instant event) and dumps it to `CLKP_KERNEL_DIR` if configured.
+* `clCreateProgramWithBinary`: Dumps the binary to `CLKP_KERNEL_DIR` if configured.
+* `clCreateProgramWithIL`: Emits SPIR-V disassembly (if enabled) to the trace and dumps IL/disassembly to `CLKP_KERNEL_DIR` if configured.
+* `clCreateKernel`: Tracks kernel-to-program relationships and kernel names.
+* `clEnqueueNDRangeKernel`: Enqueues the kernel and registers a completion callback. The callback retrieves GPU start/end timestamps via `clGetEventProfilingInfo` and emits a corresponding Perfetto slice.
+* `clReleaseCommandQueue`: Cleans up the background helper thread and resources associated with the queue.
+
+Every intercepted host API call also generates a host-side Perfetto slice.
