@@ -220,7 +220,6 @@ static cl_program clkp_clCreateProgramWithIL(cl_context context, const void *il,
     return program;
 }
 
-static uint32_t kernel_number = 0;
 static std::map<cl_kernel, std::string> kernel_to_kernel_name;
 static std::map<cl_kernel, cl_program> kernel_to_program;
 static cl_kernel clkp_clCreateKernel(cl_program program, const char *kernel_name, cl_int *errcode_ret)
