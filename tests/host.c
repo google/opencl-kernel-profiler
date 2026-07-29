@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 void vector_inc(cl_device_id device, cl_context context, cl_command_queue command_queue, size_t buffer_size,
     void *buffer, const char **source, const size_t *source_length, const size_t *global_work_size)

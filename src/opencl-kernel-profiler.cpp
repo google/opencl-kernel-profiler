@@ -237,10 +237,11 @@ static cl_kernel clkp_clCreateKernel(cl_program program, const char *kernel_name
 
 struct callback_data {
     cl_command_queue queue;
-    cl_kernel kernel;
     cl_event event;
     size_t gidX, gidY, gidZ;
     int64_t time_offset;
+    std::string kernel_name;
+    std::string program_string;
 };
 
 struct ThreadInfo {
@@ -248,6 +249,7 @@ struct ThreadInfo {
     std::condition_variable cv;
     std::queue<callback_data *> callbacks;
     bool stop;
+    int pending_callbacks;
 };
 
 static std::map<cl_command_queue, ThreadInfo *> queue_to_thread_info;
@@ -262,9 +264,19 @@ static void callback(cl_event event, cl_int event_command_exec_status, void *use
     assert(data != nullptr);
     assert(event_command_exec_status == CL_COMPLETE);
     cl_command_queue queue = data->queue;
+
+    std::lock_guard<std::mutex> lock(g_lock);
+    if (queue_to_thread_info.count(queue) == 0) {
+        // Queue was released before this callback fired.
+        // Clean up resources.
+        tdispatch->clReleaseEvent(data->event);
+        delete data;
+        return;
+    }
+
     ThreadInfo *thread_info = queue_to_thread_info[queue];
     {
-        std::lock_guard<std::mutex> lock(thread_info->lock);
+        std::lock_guard<std::mutex> lock_ti(thread_info->lock);
         thread_info->callbacks.push(data);
         thread_info->cv.notify_all();
     }
@@ -274,7 +286,7 @@ static callback_data *get_callback(ThreadInfo *thread_info)
 {
     std::unique_lock<std::mutex> lock(thread_info->lock);
     while (thread_info->callbacks.empty()) {
-        if (thread_info->stop) {
+        if (thread_info->stop && thread_info->pending_callbacks == 0) {
             return nullptr;
         }
         TRACE_EVENT_BEGIN(CLKP_PERFETTO_CATEGORY, "clkp_wait");
@@ -289,7 +301,6 @@ static callback_data *get_callback(ThreadInfo *thread_info)
 static void trace_callback(callback_data *data)
 {
     cl_command_queue queue = data->queue;
-    cl_kernel kernel = data->kernel;
     cl_event event = data->event;
     size_t gidX = data->gidX, gidY = data->gidY, gidZ = data->gidZ;
     int64_t time_offset = data->time_offset;
@@ -297,31 +308,24 @@ static void trace_callback(callback_data *data)
     cl_ulong start, end;
     cl_int err;
     err = tdispatch->clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_START, sizeof(start), &start, nullptr);
-    CHECK_CL(err, return, "clGetEventProfilingInfo(CL_PROFILING_COMMAND_START) failed (%i)", err);
+    CHECK_CL(err, tdispatch->clReleaseEvent(event);
+             return, "clGetEventProfilingInfo(CL_PROFILING_COMMAND_START) failed (%i)", err);
     err = tdispatch->clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_END, sizeof(end), &end, nullptr);
-    CHECK_CL(err, return, "clGetEventProfilingInfo(CL_PROFILING_COMMAND_END) failed (%i)", err);
+    CHECK_CL(err, tdispatch->clReleaseEvent(event);
+             return, "clGetEventProfilingInfo(CL_PROFILING_COMMAND_END) failed (%i)", err);
     if (end < start) {
         TRACE_EVENT_INSTANT(CLKP_PERFETTO_CATEGORY, perfetto::StaticString("INVALID_TIMESTAMPS"),
             perfetto::Track((uintptr_t)queue), "start", start, "end", end);
+        tdispatch->clReleaseEvent(event);
         return;
     }
 
-    std::string kernel_name = "?";
-    if (kernel_to_kernel_name.count(kernel)) {
-        kernel_name = kernel_to_kernel_name[kernel];
-    }
-
-    std::string program_string = "clkp_p?";
-    if (kernel_to_program.count(kernel) && program_to_string.count(kernel_to_program[kernel])) {
-        program_string = program_to_string[kernel_to_program[kernel]];
-    }
-
-    std::string name = program_string + "-" + kernel_name + "-" + std::to_string(gidX) + "." + std::to_string(gidY)
-        + "." + std::to_string(gidZ);
+    std::string name = data->program_string + "-" + data->kernel_name + "-" + std::to_string(gidX) + "."
+        + std::to_string(gidY) + "." + std::to_string(gidZ);
 
     TRACE_EVENT_BEGIN(CLKP_PERFETTO_CATEGORY, perfetto::DynamicString(name), perfetto::Track((uintptr_t)queue),
-        (uint64_t)(start + time_offset), "program", perfetto::DynamicString(program_string), "kernel_name",
-        perfetto::DynamicString(kernel_name), "gidX", gidX, "gidY", gidY, "gidZ", gidZ);
+        (uint64_t)(start + time_offset), "program", perfetto::DynamicString(data->program_string), "kernel_name",
+        perfetto::DynamicString(data->kernel_name), "gidX", gidX, "gidY", gidY, "gidZ", gidZ);
     TRACE_EVENT_END(CLKP_PERFETTO_CATEGORY, perfetto::Track((uintptr_t)queue), (uint64_t)(end + time_offset));
 
     tdispatch->clReleaseEvent(event);
@@ -340,7 +344,12 @@ static void queue_thread_function(ThreadInfo *thread_info)
             return;
         }
         trace_callback(data);
-        free(data);
+        {
+            std::lock_guard<std::mutex> lock(thread_info->lock);
+            thread_info->pending_callbacks--;
+            thread_info->cv.notify_all();
+        }
+        delete data;
     }
 }
 
@@ -352,45 +361,80 @@ static cl_int clkp_clEnqueueNDRangeKernel(cl_command_queue command_queue, cl_ker
     size_t gidX = work_dim > 0 ? global_work_size[0] : 1;
     size_t gidY = work_dim > 1 ? global_work_size[1] : 1;
     size_t gidZ = work_dim > 2 ? global_work_size[2] : 1;
-    TRACE_EVENT(CLKP_PERFETTO_CATEGORY, "clEnqueueNDRangeKernel", "program",
-        perfetto::DynamicString(program_to_string[kernel_to_program[kernel]]), "kernel_name",
-        perfetto::DynamicString(kernel_to_kernel_name[kernel]), "gidX", gidX, "gidY", gidY, "gidZ", gidZ);
+
+    std::string kernel_name = "?";
+    if (kernel_to_kernel_name.count(kernel)) {
+        kernel_name = kernel_to_kernel_name[kernel];
+    }
+
+    std::string program_string = "clkp_p?";
+    if (kernel_to_program.count(kernel) && program_to_string.count(kernel_to_program[kernel])) {
+        program_string = program_to_string[kernel_to_program[kernel]];
+    }
+
+    TRACE_EVENT(CLKP_PERFETTO_CATEGORY, "clEnqueueNDRangeKernel", "program", perfetto::DynamicString(program_string),
+        "kernel_name", perfetto::DynamicString(kernel_name), "gidX", gidX, "gidY", gidY, "gidZ", gidZ);
 
     bool event_is_null = event == nullptr;
+    cl_event local_event;
+    cl_event *event_to_use = event;
     if (event_is_null) {
-        event = (cl_event *)malloc(sizeof(cl_event));
-        CHECK_ALLOC(event, return CL_OUT_OF_HOST_MEMORY);
+        event_to_use = &local_event;
     }
 
     cl_int err = tdispatch->clEnqueueNDRangeKernel(command_queue, kernel, work_dim, global_work_offset,
-        global_work_size, local_work_size, num_events_in_wait_list, event_wait_list, event);
+        global_work_size, local_work_size, num_events_in_wait_list, event_wait_list, event_to_use);
 
-    struct callback_data *data = nullptr;
-    auto clean = [&data, &event_is_null, &err, &event](bool clean_user_data = true) {
-        if (clean_user_data) {
-            free(data);
-        }
-        if (!event_is_null) {
-            tdispatch->clRetainEvent(*event);
-        }
-    };
-    CHECK_CL(err, clean(); return err, "clEnqueueNDRangeKernel failed (%i)", err);
+    if (err != CL_SUCCESS) {
+        return err;
+    }
 
-    data = (struct callback_data *)malloc(sizeof(struct callback_data));
-    CHECK_ALLOC(data, clean(); return err);
+    ThreadInfo *thread_info = queue_to_thread_info[command_queue];
+    {
+        std::lock_guard<std::mutex> lock_ti(thread_info->lock);
+        thread_info->pending_callbacks++;
+    }
+
+    struct callback_data *data = new (std::nothrow) callback_data();
+    if (data == nullptr) {
+        {
+            std::lock_guard<std::mutex> lock_ti(thread_info->lock);
+            thread_info->pending_callbacks--;
+        }
+        if (event_is_null) {
+            tdispatch->clReleaseEvent(local_event);
+        }
+        return CL_OUT_OF_HOST_MEMORY;
+    }
+
     data->queue = command_queue;
-    data->kernel = kernel;
-    data->event = *event;
+    data->event = *event_to_use;
     data->gidX = gidX;
     data->gidY = gidY;
     data->gidZ = gidZ;
     data->time_offset = queue_to_time_offset[command_queue];
+    data->kernel_name = kernel_name;
+    data->program_string = program_string;
 
-    cl_int err_cb = tdispatch->clSetEventCallback(*event, CL_COMPLETE, callback, data);
-    CHECK_CL(err_cb, clean(); return err, "clSetEventCallback failed (%i)", err_cb);
+    // Retain the event for the callback
+    tdispatch->clRetainEvent(*event_to_use);
 
-    clean(false);
-    return err;
+    cl_int err_cb = tdispatch->clSetEventCallback(*event_to_use, CL_COMPLETE, callback, data);
+    if (err_cb != CL_SUCCESS) {
+        PRINT("clSetEventCallback failed (%i)", err_cb);
+        tdispatch->clReleaseEvent(*event_to_use); // Undo retain
+        delete data;
+        {
+            std::lock_guard<std::mutex> lock_ti(thread_info->lock);
+            thread_info->pending_callbacks--;
+        }
+        if (event_is_null) {
+            tdispatch->clReleaseEvent(local_event); // Release the one we created
+        }
+        return err_cb;
+    }
+
+    return CL_SUCCESS;
 }
 
 /*****************************************************************************/
@@ -399,19 +443,36 @@ static cl_int clkp_clEnqueueNDRangeKernel(cl_command_queue command_queue, cl_ker
 
 static cl_int clkp_clReleaseCommandQueue(cl_command_queue command_queue)
 {
-    std::lock_guard<std::mutex> lock(g_lock);
-    TRACE_EVENT(CLKP_PERFETTO_CATEGORY, "clReleaseCommandQueue");
+    ThreadInfo *thread_info = nullptr;
+    std::thread thread_to_join;
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        TRACE_EVENT(CLKP_PERFETTO_CATEGORY, "clReleaseCommandQueue");
+        thread_info = queue_to_thread_info[command_queue];
+        thread_to_join = std::move(queue_to_thread[command_queue]);
+    }
+
     auto ret = tdispatch->clReleaseCommandQueue(command_queue);
 
-    ThreadInfo *thread_info = queue_to_thread_info[command_queue];
-    {
-        std::lock_guard<std::mutex> lock(thread_info->lock);
-        thread_info->stop = true;
-        thread_info->cv.notify_all();
+    if (thread_info) {
+        {
+            std::unique_lock<std::mutex> lock_ti(thread_info->lock);
+            thread_info->stop = true;
+            thread_info->cv.notify_all();
+            thread_info->cv.wait(lock_ti, [&] { return thread_info->pending_callbacks == 0; });
+        }
+        if (thread_to_join.joinable()) {
+            thread_to_join.join();
+        }
     }
-    queue_to_thread[command_queue].join();
-    queue_to_thread.erase(command_queue);
-    queue_to_thread_info.erase(command_queue);
+
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        queue_to_thread.erase(command_queue);
+        queue_to_thread_info.erase(command_queue);
+        queue_to_time_offset.erase(command_queue);
+    }
+
     delete thread_info;
 
     return ret;
@@ -452,13 +513,24 @@ static cl_command_queue create_command_queue(
         perfetto::Track((uintptr_t)command_queue));
     ThreadInfo *thread_info = new ThreadInfo();
     thread_info->stop = false;
+    thread_info->pending_callbacks = 0;
     queue_to_thread_info[command_queue] = thread_info;
     queue_to_thread.emplace(command_queue, [thread_info] { queue_thread_function(thread_info); });
 
-    cl_ulong device_timestamp, host_timestamp;
-    tdispatch->clGetDeviceAndHostTimer(device, &device_timestamp, &host_timestamp);
-    uint64_t perfetto_timestamp = perfetto::TrackEvent::GetTraceTimeNs();
-    queue_to_time_offset[command_queue] = perfetto_timestamp - device_timestamp;
+    int64_t offset = 0;
+    if (tdispatch->clGetDeviceAndHostTimer) {
+        cl_ulong device_timestamp, host_timestamp;
+        cl_int timer_err = tdispatch->clGetDeviceAndHostTimer(device, &device_timestamp, &host_timestamp);
+        if (timer_err == CL_SUCCESS) {
+            uint64_t perfetto_timestamp = perfetto::TrackEvent::GetTraceTimeNs();
+            offset = perfetto_timestamp - device_timestamp;
+        } else {
+            PRINT("clGetDeviceAndHostTimer failed (%i)", timer_err);
+        }
+    } else {
+        PRINT("clGetDeviceAndHostTimer is not available");
+    }
+    queue_to_time_offset[command_queue] = offset;
 
     return command_queue;
 }
