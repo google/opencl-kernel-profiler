@@ -98,7 +98,21 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     target_link_libraries(clkp-extractor log)
   endif()
 
-  install(TARGETS clkp-extractor
+  add_executable(clkp-runner runner/runner.cpp)
+  target_include_directories(clkp-runner PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${PERFETTO_SDK_PATH})
+  if (OPENCL_HEADER_PATH)
+    target_include_directories(clkp-runner PUBLIC ${OPENCL_HEADER_PATH})
+  endif()
+  if (OPENCL_LIBRARY_PATH)
+    target_link_directories(clkp-runner PUBLIC ${OPENCL_LIBRARY_PATH})
+  endif()
+  target_link_libraries(clkp-runner OpenCL ${PERFETTO_LIBRARY})
+  target_compile_options(clkp-runner PUBLIC "-DCLKP_PERFETTO_AMALGAMATED")
+  if (ANDROID)
+    target_link_libraries(clkp-runner log)
+  endif()
+
+  install(TARGETS clkp-extractor clkp-runner
           RUNTIME DESTINATION bin)
 endif()
 

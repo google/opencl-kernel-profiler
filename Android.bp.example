@@ -44,6 +44,19 @@ cc_binary {
     soc_specific: true,
 }
 
+cc_binary {
+    name: "clkp-runner",
+    srcs: ["runner/runner.cpp"],
+    local_include_dirs: ["include"],
+    shared_libs: [
+      "//external/OpenCL-ICD-Loader:libOpenCL",
+      "liblog",
+    ],
+    static_libs: ["libperfetto_client_experimental"],
+    header_libs: ["OpenCL-Headers"],
+    soc_specific: true,
+}
+
 cc_genrule {
     name: "opencl-kernel-profiler-path",
     out: ["opencl-kernel-profiler.lay"],
