@@ -45,7 +45,7 @@ if (SPIRV_DISASSEMBLY)
 endif()
 
 add_library (opencl-kernel-profiler SHARED layer/layer.cpp)
-target_include_directories(opencl-kernel-profiler PUBLIC ${PERFETTO_SDK_PATH})
+target_include_directories(opencl-kernel-profiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${PERFETTO_SDK_PATH})
 if (OPENCL_HEADER_PATH)
   target_include_directories(opencl-kernel-profiler PUBLIC ${OPENCL_HEADER_PATH})
 endif()
