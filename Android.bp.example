@@ -26,7 +26,7 @@ license {
 
 cc_library_shared {
     name: "opencl-kernel-profiler",
-    srcs: ["src/opencl-kernel-profiler.cpp"],
+    srcs: ["layer/layer.cpp"],
     shared_libs: ["liblog"],
     static_libs: ["libperfetto_client_experimental"],
     header_libs: ["OpenCL-Headers"],
