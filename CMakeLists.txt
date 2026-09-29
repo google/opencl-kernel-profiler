@@ -89,6 +89,19 @@ install(TARGETS opencl-kernel-profiler
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION bin)
 
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+  add_executable(clkp-extractor extractor/extractor.cpp)
+  target_include_directories(clkp-extractor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${PERFETTO_SDK_PATH})
+  target_link_libraries(clkp-extractor ${PERFETTO_LIBRARY})
+  target_compile_options(clkp-extractor PUBLIC "-DCLKP_PERFETTO_AMALGAMATED")
+  if (ANDROID)
+    target_link_libraries(clkp-extractor log)
+  endif()
+
+  install(TARGETS clkp-extractor
+          RUNTIME DESTINATION bin)
+endif()
+
 if (CLKP_BUILD_TESTS)
   add_subdirectory(tests)
 endif ()

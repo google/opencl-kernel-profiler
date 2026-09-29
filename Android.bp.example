@@ -34,6 +34,16 @@ cc_library_shared {
     soc_specific: true,
 }
 
+cc_binary {
+    name: "clkp-extractor",
+    host_supported: true,
+    srcs: ["extractor/extractor.cpp"],
+    local_include_dirs: ["include"],
+    shared_libs: ["liblog"],
+    static_libs: ["libperfetto_client_experimental"],
+    soc_specific: true,
+}
+
 cc_genrule {
     name: "opencl-kernel-profiler-path",
     out: ["opencl-kernel-profiler.lay"],
