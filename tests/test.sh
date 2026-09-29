@@ -20,6 +20,9 @@ set -xe
 
 SCRIPT_DIR="$(dirname $(realpath "${BASH_SOURCE[0]}"))"
 CLKP_HOST_TEST="$1"
+BUILD_DIR="$(dirname $(dirname $(realpath "${CLKP_HOST_TEST}")))"
+CLKP_EXTRACTOR="${BUILD_DIR}/clkp-extractor"
+CLKP_RUNNER="${BUILD_DIR}/clkp-runner"
 EXPECTATION_FILE="${SCRIPT_DIR}/trace-expectation.txt"
 GPU_SRC_FILE="${SCRIPT_DIR}/gpu.cl"
 GPU_SRC_SPVASM_FILE="${SCRIPT_DIR}/gpu.spvasm"
@@ -30,6 +33,10 @@ TRACE_PROCESSOR_SHELL=${TRACE_PROCESSOR_SHELL:-"trace_processor_shell"}
 TMP_DIR="$(mktemp -d)"
 KERNELS_DIR="${TMP_DIR}/kernels"
 TRACE_FILE="${TMP_DIR}/trace"
+EXTRACTED_TRACE="${TMP_DIR}/extracted.trace"
+WINDOWED_TRACE="${TMP_DIR}/windowed.trace"
+CMDBUF_TRACE="${TMP_DIR}/cmdbuf.trace"
+CMDBUF_EXTRACTED_TRACE="${TMP_DIR}/cmdbuf_extracted.trace"
 OUTPUT_FILE="${TMP_DIR}/output.txt"
 EXPECTATION_SORTED_FILE="${TMP_DIR}/trace-expectation.sorted"
 GPU_SPV_FILE="${TMP_DIR}/gpu.spv"
@@ -75,3 +82,25 @@ cat "${OUTPUT_FILE}"
 grep -F "OpName %inc \"inc\"" ${OUTPUT_FILE}
 
 diff "${GPU_SPVASM_FILE}" "${KERNELS_DIR}/clkp_p1.spvasm"
+
+# Test clkp-extractor --list-dispatches
+"${CLKP_EXTRACTOR}" --list-dispatches "${TRACE_FILE}" | tee "${OUTPUT_FILE}"
+grep -F "clkp_p0" "${OUTPUT_FILE}"
+grep -F "clkp_p1" "${OUTPUT_FILE}"
+
+# Test full trace extraction and multi-dispatch replay via clkp-runner
+"${CLKP_EXTRACTOR}" "${TRACE_FILE}" -o "${EXTRACTED_TRACE}"
+CLKP_TRACE_DEST="${TMP_DIR}/runner_full.trace" "${CLKP_RUNNER}" "${EXTRACTED_TRACE}" -m 1 -n 3 --json "${TMP_DIR}/replay.json"
+grep -F "\"iterations\": 3" "${TMP_DIR}/replay.json"
+
+# Test windowed extraction (single dispatch) and replay
+"${CLKP_EXTRACTOR}" "${TRACE_FILE}" --start-dispatch 0 --end-dispatch 0 -o "${WINDOWED_TRACE}"
+CLKP_TRACE_DEST="${TMP_DIR}/runner_windowed.trace" "${CLKP_RUNNER}" "${WINDOWED_TRACE}" -m 1 -n 2
+
+# Test cl_khr_command_buffer capture, extraction, and replay
+CLKP_TRACE_DEST="${CMDBUF_TRACE}" "${CLKP_HOST_TEST}" --cmdbuf "${GPU_SRC_FILE}"
+"${CLKP_EXTRACTOR}" --list-dispatches "${CMDBUF_TRACE}" | tee "${OUTPUT_FILE}"
+grep -F "clEnqueueCommandBufferKHR" "${OUTPUT_FILE}"
+"${CLKP_EXTRACTOR}" "${CMDBUF_TRACE}" -o "${CMDBUF_EXTRACTED_TRACE}"
+CLKP_TRACE_DEST="${TMP_DIR}/runner_cmdbuf.trace" "${CLKP_RUNNER}" "${CMDBUF_EXTRACTED_TRACE}" -m 1 -n 2
+CLKP_TRACE_DEST="${TMP_DIR}/runner_cmdbuf_emu.trace" "${CLKP_RUNNER}" "${CMDBUF_EXTRACTED_TRACE}" -m 1 -n 2 --emulate-command-buffer

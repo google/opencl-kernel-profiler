@@ -12,15 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#define CL_TARGET_OPENCL_VERSION 220
+#define CL_TARGET_OPENCL_VERSION 300
+#define CL_ENABLE_BETA_EXTENSIONS
 #include <CL/cl.h>
+#include <CL/cl_ext.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-void vector_inc(cl_device_id device, cl_context context, cl_command_queue command_queue, size_t buffer_size,
-    void *buffer, const char **source, const size_t *source_length, const size_t *global_work_size)
+#include <string.h>
+
+void vector_inc(cl_platform_id platform, cl_device_id device, cl_context context, cl_command_queue command_queue,
+    size_t buffer_size, void *buffer, const char **source, const size_t *source_length, const size_t *global_work_size,
+    bool use_cmdbuf)
 {
     // Check if source is SPIR-V binary (starts with SPIR-V magic number 0x07230203)
     bool is_spirv = (*source_length >= 4) && (((const uint32_t *)*source)[0] == 0x07230203);
@@ -39,10 +44,37 @@ void vector_inc(cl_device_id device, cl_context context, cl_command_queue comman
     cl_mem cl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, buffer_size, NULL, NULL);
     clSetKernelArg(kernel, 0, sizeof(cl_mem), &cl_buffer);
 
-    // Write buffer to device, execute kernel and read buffer from device
-    clEnqueueWriteBuffer(command_queue, cl_buffer, CL_BLOCKING, 0, buffer_size, buffer, 0, NULL, NULL);
-    clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
-    clEnqueueReadBuffer(command_queue, cl_buffer, CL_BLOCKING, 0, buffer_size, buffer, 0, NULL, NULL);
+    if (use_cmdbuf) {
+        clCreateCommandBufferKHR_fn pfn_clCreateCommandBufferKHR
+            = (clCreateCommandBufferKHR_fn)clGetExtensionFunctionAddressForPlatform(
+                platform, "clCreateCommandBufferKHR");
+        clCommandNDRangeKernelKHR_fn pfn_clCommandNDRangeKernelKHR
+            = (clCommandNDRangeKernelKHR_fn)clGetExtensionFunctionAddressForPlatform(
+                platform, "clCommandNDRangeKernelKHR");
+        clFinalizeCommandBufferKHR_fn pfn_clFinalizeCommandBufferKHR
+            = (clFinalizeCommandBufferKHR_fn)clGetExtensionFunctionAddressForPlatform(
+                platform, "clFinalizeCommandBufferKHR");
+        clEnqueueCommandBufferKHR_fn pfn_clEnqueueCommandBufferKHR
+            = (clEnqueueCommandBufferKHR_fn)clGetExtensionFunctionAddressForPlatform(
+                platform, "clEnqueueCommandBufferKHR");
+        clReleaseCommandBufferKHR_fn pfn_clReleaseCommandBufferKHR
+            = (clReleaseCommandBufferKHR_fn)clGetExtensionFunctionAddressForPlatform(
+                platform, "clReleaseCommandBufferKHR");
+
+        clEnqueueWriteBuffer(command_queue, cl_buffer, CL_BLOCKING, 0, buffer_size, buffer, 0, NULL, NULL);
+        cl_command_buffer_khr cmdbuf = pfn_clCreateCommandBufferKHR(1, &command_queue, NULL, NULL);
+        pfn_clCommandNDRangeKernelKHR(cmdbuf, NULL, NULL, kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL, NULL);
+        pfn_clFinalizeCommandBufferKHR(cmdbuf);
+        pfn_clEnqueueCommandBufferKHR(0, NULL, cmdbuf, 0, NULL, NULL);
+        clFinish(command_queue);
+        pfn_clReleaseCommandBufferKHR(cmdbuf);
+        clEnqueueReadBuffer(command_queue, cl_buffer, CL_BLOCKING, 0, buffer_size, buffer, 0, NULL, NULL);
+    } else {
+        // Write buffer to device, execute kernel and read buffer from device
+        clEnqueueWriteBuffer(command_queue, cl_buffer, CL_BLOCKING, 0, buffer_size, buffer, 0, NULL, NULL);
+        clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
+        clEnqueueReadBuffer(command_queue, cl_buffer, CL_BLOCKING, 0, buffer_size, buffer, 0, NULL, NULL);
+    }
 
     clReleaseMemObject(cl_buffer);
     clReleaseKernel(kernel);
@@ -55,10 +87,16 @@ int main(int argc, char **argv)
 {
     printf("Starting OpenCL application\n");
 
-    if (argc < 2) {
-        fprintf(stderr,
-            "At least 1 argument is expected. It should be the path(s) to the kernel source code or SPIR-V "
-            "binary\n");
+    bool use_cmdbuf = false;
+    int first_file_idx = 1;
+    if (argc >= 2 && strcmp(argv[1], "--cmdbuf") == 0) {
+        use_cmdbuf = true;
+        first_file_idx = 2;
+    }
+
+    if (argc <= first_file_idx) {
+        fprintf(stderr, "At least 1 file argument is expected. Usage: %s [--cmdbuf] <kernel_source_or_spirv>...\n",
+            argv[0]);
         return -2;
     }
 
@@ -77,7 +115,7 @@ int main(int argc, char **argv)
     printf("CL_PLATFORM_NAME: %s\n", platform_name);
 
     // Process each file argument
-    for (int file_idx = 1; file_idx < argc; file_idx++) {
+    for (int file_idx = first_file_idx; file_idx < argc; file_idx++) {
         printf("Processing file: %s\n", argv[file_idx]);
 
         FILE *f_source = fopen(argv[file_idx], "rb"); // Open in binary mode to support both text and binary
@@ -102,8 +140,8 @@ int main(int argc, char **argv)
         }
 
         size_t global_work_size = NB_ELEM;
-        vector_inc(device, context, command_queue, sizeof(buffer), buffer, (const char **)&source, &source_length,
-            &global_work_size);
+        vector_inc(platform, device, context, command_queue, sizeof(buffer), buffer, (const char **)&source,
+            &source_length, &global_work_size, use_cmdbuf);
 
         for (unsigned i = 0; i < NB_ELEM; i++) {
             if (buffer[i] != i + 43) {
