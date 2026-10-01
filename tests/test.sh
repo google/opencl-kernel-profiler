@@ -88,10 +88,16 @@ diff "${GPU_SPVASM_FILE}" "${KERNELS_DIR}/clkp_p1.spvasm"
 grep -F "clkp_p0" "${OUTPUT_FILE}"
 grep -F "clkp_p1" "${OUTPUT_FILE}"
 
-# Test full trace extraction and multi-dispatch replay via clkp-runner
+# Test full trace extraction and multi-dispatch replay via clkp-runner (default target aggregation)
 "${CLKP_EXTRACTOR}" "${TRACE_FILE}" -o "${EXTRACTED_TRACE}"
-CLKP_TRACE_DEST="${TMP_DIR}/runner_full.trace" "${CLKP_RUNNER}" "${EXTRACTED_TRACE}" -m 1 -n 3 --json "${TMP_DIR}/replay.json"
+CLKP_TRACE_DEST="${TMP_DIR}/runner_full.trace" "${CLKP_RUNNER}" "${EXTRACTED_TRACE}" -m 1 -n 3 --json "${TMP_DIR}/replay.json" | tee "${OUTPUT_FILE}"
+grep -F "DISPATCHES" "${OUTPUT_FILE}"
 grep -F "\"iterations\": 3" "${TMP_DIR}/replay.json"
+grep -F "\"targets\":" "${TMP_DIR}/replay.json"
+
+# Test --by-dispatch option
+CLKP_TRACE_DEST="${TMP_DIR}/runner_by_dispatch.trace" "${CLKP_RUNNER}" "${EXTRACTED_TRACE}" -m 1 -n 2 --by-dispatch | tee "${OUTPUT_FILE}"
+grep -F "DISPATCH    TARGET" "${OUTPUT_FILE}"
 
 # Test windowed extraction (single dispatch) and replay
 "${CLKP_EXTRACTOR}" "${TRACE_FILE}" --start-dispatch 0 --end-dispatch 0 -o "${WINDOWED_TRACE}"

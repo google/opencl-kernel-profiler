@@ -156,6 +156,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_INSTALL_PREFIX=$(pwd)/third_party/pocl/install \
             -DCMAKE_BUILD_TYPE=Release \
+            -DLLC_HOST_CPU=x86-64 \
             -DCMAKE_CXX_COMPILER="$(which clang++)" \
             -DCMAKE_C_COMPILER="$(which clang)"
           cmake --build third_party/pocl/build --target install
