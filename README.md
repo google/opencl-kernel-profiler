@@ -40,6 +40,7 @@ For real-world examples, see:
 * `PERFETTO_SDK_PATH` (REQUIRED): Path to [perfetto](https://github.com/google/perfetto) SDK (expects `perfetto.cc` and `perfetto.h` in this directory).
 * `PERFETTO_LIBRARY`: Name of an existing perfetto library to link against (avoids compiling `perfetto.cc`).
 * `OPENCL_HEADER_PATH`: Path to [OpenCL-Headers](https://github.com/KhronosGroup/OpenCL-Headers).
+* `OPENCL_LIBRARY_PATH`: Path to the directory containing `libOpenCL.so` (used to link `clkp-runner` on Linux/Android).
 * `BACKEND`: Perfetto backend to use:
   * `InProcess` (default): The application generates the traces directly ([Perfetto In-Process Mode](https://perfetto.dev/docs/instrumentation/tracing-sdk#in-process-mode)).
   * `System`: The system-wide Perfetto daemon (`traced`) collects the traces ([Perfetto System Mode](https://perfetto.dev/docs/instrumentation/tracing-sdk#system-mode)).
@@ -66,9 +67,9 @@ Then run the application using `opencl-kernel-profiler.sh`. This script will tak
 * Clone the project under `<aosp>/external/opencl-kernel-profiler`
 * Compile the project:
   ```bash
-  m opencl-kernel-profiler
+  m opencl-kernel-profiler clkp-extractor clkp-runner
   ```
-* Push the library and the `.lay` file to the device. Note that `/vendor` partition is usually read-only, so you may need to remount it first:
+* Push the library, tools, and the `.lay` file to the device. Note that `/vendor` partition is usually read-only, so you may need to remount it first:
   ```bash
   adb root
   adb disable-verity
@@ -78,6 +79,8 @@ Then run the application using `opencl-kernel-profiler.sh`. This script will tak
   adb remount
   adb shell mkdir -p /vendor/etc/Khronos/OpenCL/layers/
   adb push $OUT/vendor/lib64/opencl-kernel-profiler.so /vendor/lib64/
+  adb push $OUT/vendor/bin/clkp-extractor /vendor/bin/
+  adb push $OUT/vendor/bin/clkp-runner /vendor/bin/
   adb push $OUT/vendor/etc/Khronos/OpenCL/layers/opencl-kernel-profiler.lay /vendor/etc/Khronos/OpenCL/layers/
   adb shell chcon u:object_r:same_process_hal_file:s0 /vendor/lib64/opencl-kernel-profiler.so
   ```
@@ -91,6 +94,7 @@ The profiler can be configured at runtime using the following environment variab
 * `CLKP_TRACE_DEST` (InProcess backend only): File path where the Perfetto trace will be saved. (Default: `opencl-kernel-profiler.trace`).
 * `CLKP_TRACE_MAX_SIZE` (InProcess backend only): Maximum size of the trace buffer in KB. (Default: `1024`).
 * `CLKP_KERNEL_DIR`: Directory path where kernel sources, binaries, and IL will be dumped. If not set, dumping is disabled.
+* `CLKP_DISABLE_PROGRAM_BINARY_CACHE`: When set to `1`, reports zero size for `CL_PROGRAM_BINARY_SIZES` in `clGetProgramInfo` so applications fall back to `clCreateProgramWithSource` or `clCreateProgramWithIL`.
 
 # Using the Trace
 
@@ -105,6 +109,59 @@ echo "SELECT EXTRACT_ARG(arg_set_id, 'debug.string') FROM slice WHERE slice.name
   | ./trace_processor -q /dev/stdin <opencl-kernel-profiler.trace>
 ```
 
+# Trace Extraction and Replay (`clkp-extractor` & `clkp-runner`)
+
+On Linux and Android, `opencl-kernel-profiler` builds two standalone tools to inspect, filter, and replay captured OpenCL Perfetto traces:
+
+## `clkp-extractor`
+
+`clkp-extractor` inspects Perfetto traces and extracts self-contained `.perfetto-trace` files containing only the OpenCL (`clkp`) events (optionally trimmed to a dispatch or call window while preserving all required setup and resource creation events).
+
+```bash
+# List all recorded kernel dispatches and command buffer executions in a trace
+clkp-extractor --list-dispatches -i <input.perfetto-trace>
+
+# Extract all OpenCL events into a compact trace
+clkp-extractor -i <input.perfetto-trace> -o <extracted.perfetto-trace>
+
+# Extract a specific dispatch window [start_dispatch, end_dispatch]
+clkp-extractor -i <input.perfetto-trace> -o <windowed.perfetto-trace> \
+  --start-dispatch 10 --end-dispatch 25
+```
+
+Options:
+* `-i, --input <file>`: Input Perfetto trace file.
+* `-o, --output <file>`: Output filtered Perfetto trace file.
+* `-l, --list-dispatches`: List all OpenCL dispatches and command buffer executions.
+* `--start-dispatch <id>` / `--end-dispatch <id>`: Inclusive `dispatch_id` window to extract.
+* `--start-call <id>` / `--end-call <id>`: Inclusive `call_id` window to extract.
+
+## `clkp-runner`
+
+`clkp-runner` replays a raw or extracted `.perfetto-trace` against an OpenCL driver, separating one-time resource/program/command-buffer setup from a timed execution loop and reporting GPU profiling statistics (aggregated by target by default, or per dispatch with `--by-dispatch`).
+
+```bash
+# Replay a trace with 5 warmup iterations and 20 measured iterations
+clkp-runner -i <extracted.perfetto-trace> -m 5 -n 20 --json results.json
+
+# Report profiling statistics per dispatch_id instead of aggregating by target
+clkp-runner -i <extracted.perfetto-trace> -m 5 -n 20 --by-dispatch
+```
+
+Options:
+* `-i, --input <file>`: Input Perfetto trace file.
+* `-p, --platform <idx>`: OpenCL platform index (default: `0`).
+* `-d, --device <idx>`: OpenCL device index (default: `0`).
+* `-m, --warmup <count>`: Number of warmup iterations (default: `0`).
+* `-n, --iterations <count>`: Number of measured iterations (default: `1`).
+* `--start-dispatch <id>` / `--end-dispatch <id>`: Inclusive `dispatch_id` range to replay.
+* `--use-command-buffer`: Promote standard queue dispatches into a `cl_command_buffer_khr`.
+* `--emulate-command-buffer`: Emulate `cl_khr_command_buffer` calls via standard queue enqueues.
+* `--allow-lws-fallback`: Fall back to `NULL` `local_work_size` if the replay device rejects the captured work-group size.
+* `--by-dispatch`: Aggregate profiling results by `dispatch_id` instead of by target.
+* `--json <file>`: Write profiling results to a JSON file.
+* `-v, --verbose`: Verbose logging of replayed OpenCL calls.
+
 # Dumping Kernel Sources to Disk
 
 If `CLKP_KERNEL_DIR` is set, the profiler dumps all programs/kernels to disk:
@@ -117,14 +174,14 @@ If `CLKP_KERNEL_DIR` is not set, no files are written. This dumping occurs indep
 
 # How it Works
 
-The layer intercepts the following OpenCL APIs to instrument execution and dump resources:
+The layer intercepts OpenCL APIs (including `cl_khr_command_buffer` and `cl_khr_command_buffer_mutable_dispatch` extensions) to instrument execution, record state for replay, and dump resources:
 
 * `clCreateCommandQueue` / `clCreateCommandQueueWithProperties`: Forces `CL_QUEUE_PROFILING_ENABLE` to ensure hardware timestamps are available.
-* `clCreateProgramWithSource`: Emits the source code to the trace (as an instant event) and dumps it to `CLKP_KERNEL_DIR` if configured.
-* `clCreateProgramWithBinary`: Dumps the binary to `CLKP_KERNEL_DIR` if configured.
-* `clCreateProgramWithIL`: Emits SPIR-V disassembly (if enabled) to the trace and dumps IL/disassembly to `CLKP_KERNEL_DIR` if configured.
-* `clCreateKernel`: Tracks kernel-to-program relationships and kernel names.
-* `clEnqueueNDRangeKernel`: Enqueues the kernel and registers a completion callback. The callback retrieves GPU start/end timestamps via `clGetEventProfilingInfo` and emits a corresponding Perfetto slice.
+* `clCreateProgramWithSource`: Emits the source code to the trace (as chunked instant events) and dumps it to `CLKP_KERNEL_DIR` if configured.
+* `clCreateProgramWithBinary`: Emits binary chunks to the trace and dumps the binary to `CLKP_KERNEL_DIR` if configured.
+* `clCreateProgramWithIL`: Emits IL chunks and SPIR-V disassembly (if enabled) to the trace and dumps IL/disassembly to `CLKP_KERNEL_DIR` if configured.
+* `clCreateContext*`, `clBuildProgram`, `clCompileProgram`, `clLinkProgram`, `clCreateKernel*`, `clSetKernelArg`, `clCreateBuffer*`, `clCreateImage*`, `clCreateSampler*`, `clCreateCommandBufferKHR`, `clCommand*KHR`, `clUpdateMutableCommandsKHR`: Tracks object relationships and records parameters in the trace for `clkp-extractor` and `clkp-runner`.
+* `clEnqueueNDRangeKernel` / `clEnqueueTask` / `clEnqueueCommandBufferKHR`: Enqueues the dispatch or command buffer and registers a completion callback. The callback retrieves GPU start/end timestamps via `clGetEventProfilingInfo` and emits a corresponding Perfetto slice.
 * `clReleaseCommandQueue`: Cleans up the background helper thread and resources associated with the queue.
 
 Every intercepted host API call also generates a host-side Perfetto slice.
