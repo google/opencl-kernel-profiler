@@ -110,6 +110,7 @@ struct RunnerOptions {
     bool use_command_buffer = false;
     bool emulate_command_buffer = false;
     bool allow_lws_fallback = false;
+    bool by_dispatch = false;
     bool verbose = false;
 };
 
@@ -127,6 +128,7 @@ void print_usage(const char *prog)
               << "  --use-command-buffer         Promote queue dispatches into a cl_command_buffer_khr\n"
               << "  --emulate-command-buffer     Emulate cl_khr_command_buffer via standard queue enqueues\n"
               << "  --allow-lws-fallback         Fallback to NULL local_work_size if device rejects captured LWS\n"
+              << "  --by-dispatch                Aggregate profiling results by dispatch_id instead of by target\n"
               << "  --json <file>                Write profiling results to JSON file\n"
               << "  -v, --verbose                Verbose logging of replayed OpenCL calls\n"
               << "  -h, --help                   Show this help message\n";
@@ -161,6 +163,8 @@ bool parse_args(int argc, char **argv, RunnerOptions &opts)
             opts.emulate_command_buffer = true;
         } else if (arg == "--allow-lws-fallback") {
             opts.allow_lws_fallback = true;
+        } else if (arg == "--by-dispatch") {
+            opts.by_dispatch = true;
         } else if ((arg == "--json" || arg == "--json-output") && i + 1 < argc) {
             opts.json_output_path = argv[++i];
         } else if (arg == "-v" || arg == "--verbose") {
@@ -232,6 +236,13 @@ struct DispatchMetric {
     std::string gws;
     std::string lws;
     std::vector<uint64_t> durations_ns;
+};
+
+struct TargetMetric {
+    std::string label;
+    uint64_t dispatch_count = 0;
+    std::vector<uint64_t> durations_ns;
+    double total_iter_us = 0.0;
 };
 
 struct TraceData {
@@ -1839,7 +1850,39 @@ std::tuple<double, double, double, double> compute_stats_us(std::vector<uint64_t
     return { min_us, avg_us, med_us, max_us };
 }
 
-void print_profiling_report(const RunnerOptions &opts, const std::map<uint64_t, DispatchMetric> &metrics,
+std::vector<TargetMetric> aggregate_metrics_by_target(
+    const std::map<uint64_t, DispatchMetric> &metrics, uint32_t iterations)
+{
+    std::vector<TargetMetric> targets;
+    std::unordered_map<std::string, size_t> label_to_idx;
+
+    for (const auto &[did, m] : metrics) {
+        auto it = label_to_idx.find(m.label);
+        if (it == label_to_idx.end()) {
+            label_to_idx[m.label] = targets.size();
+            TargetMetric tm;
+            tm.label = m.label;
+            targets.push_back(std::move(tm));
+            it = label_to_idx.find(m.label);
+        }
+        auto &tm = targets[it->second];
+        tm.dispatch_count++;
+        tm.durations_ns.insert(tm.durations_ns.end(), m.durations_ns.begin(), m.durations_ns.end());
+    }
+
+    double denom = iterations > 0 ? (static_cast<double>(iterations) * 1000.0) : 1000.0;
+    for (auto &tm : targets) {
+        double sum_ns = 0.0;
+        for (uint64_t v : tm.durations_ns) {
+            sum_ns += static_cast<double>(v);
+        }
+        tm.total_iter_us = sum_ns / denom;
+    }
+
+    return targets;
+}
+
+void print_dispatch_profiling_report(const RunnerOptions &opts, const std::map<uint64_t, DispatchMetric> &metrics,
     const std::vector<uint64_t> &iter_total_ns)
 {
     std::cout << "\n=== Replay Profiling Results (warmup=" << opts.warmup_iterations
@@ -1862,6 +1905,42 @@ void print_profiling_report(const RunnerOptions &opts, const std::map<uint64_t, 
               << tot_max << "\n";
 }
 
+void print_target_profiling_report(const RunnerOptions &opts, const std::map<uint64_t, DispatchMetric> &metrics,
+    const std::vector<uint64_t> &iter_total_ns)
+{
+    auto targets = aggregate_metrics_by_target(metrics, opts.iterations);
+
+    std::cout << "\n=== Replay Profiling Results (warmup=" << opts.warmup_iterations
+              << ", iterations=" << opts.iterations << ") ===\n";
+    std::cout << std::left << std::setw(28) << "TARGET" << std::setw(12) << "DISPATCHES" << std::setw(14) << "MIN (us)"
+              << std::setw(14) << "AVG (us)" << std::setw(14) << "MEDIAN (us)" << std::setw(14) << "MAX (us)"
+              << "TOTAL/ITER (us)\n";
+
+    for (const auto &tm : targets) {
+        auto [min_us, avg_us, med_us, max_us] = compute_stats_us(tm.durations_ns);
+        std::cout << std::left << std::setw(28) << tm.label << std::setw(12) << tm.dispatch_count << std::fixed
+                  << std::setprecision(2) << std::setw(14) << min_us << std::setw(14) << avg_us << std::setw(14)
+                  << med_us << std::setw(14) << max_us << std::setw(14) << tm.total_iter_us << "\n";
+    }
+
+    auto [tot_min, tot_avg, tot_med, tot_max] = compute_stats_us(iter_total_ns);
+    std::cout << "-----------------------------------------------------------------------------------------------------"
+                 "-------\n";
+    std::cout << std::left << std::setw(28) << "TOTAL/ITER" << std::setw(12) << metrics.size() << std::fixed
+              << std::setprecision(2) << std::setw(14) << tot_min << std::setw(14) << tot_avg << std::setw(14)
+              << tot_med << std::setw(14) << tot_max << std::setw(14) << tot_avg << "\n";
+}
+
+void print_profiling_report(const RunnerOptions &opts, const std::map<uint64_t, DispatchMetric> &metrics,
+    const std::vector<uint64_t> &iter_total_ns)
+{
+    if (opts.by_dispatch) {
+        print_dispatch_profiling_report(opts, metrics, iter_total_ns);
+    } else {
+        print_target_profiling_report(opts, metrics, iter_total_ns);
+    }
+}
+
 void write_json_report(const RunnerOptions &opts, const std::string &platform_name, const std::string &device_name,
     const std::map<uint64_t, DispatchMetric> &metrics, const std::vector<uint64_t> &iter_total_ns)
 {
@@ -1874,6 +1953,8 @@ void write_json_report(const RunnerOptions &opts, const std::string &platform_na
     }
 
     auto [tot_min, tot_avg, tot_med, tot_max] = compute_stats_us(iter_total_ns);
+    auto targets = aggregate_metrics_by_target(metrics, opts.iterations);
+
     jf << "{\n"
        << "  \"platform\": \"" << platform_name << "\",\n"
        << "  \"device\": \"" << device_name << "\",\n"
@@ -1881,6 +1962,16 @@ void write_json_report(const RunnerOptions &opts, const std::string &platform_na
        << "  \"iterations\": " << opts.iterations << ",\n"
        << "  \"total_iteration_us\": { \"min\": " << tot_min << ", \"avg\": " << tot_avg << ", \"median\": " << tot_med
        << ", \"max\": " << tot_max << " },\n"
+       << "  \"targets\": [\n";
+    size_t tidx = 0;
+    for (const auto &tm : targets) {
+        auto [min_us, avg_us, med_us, max_us] = compute_stats_us(tm.durations_ns);
+        jf << "    { \"target\": \"" << tm.label << "\", \"dispatches\": " << tm.dispatch_count
+           << ", \"min_us\": " << min_us << ", \"avg_us\": " << avg_us << ", \"median_us\": " << med_us
+           << ", \"max_us\": " << max_us << ", \"total_iter_us\": " << tm.total_iter_us << " }"
+           << (++tidx < targets.size() ? "," : "") << "\n";
+    }
+    jf << "  ],\n"
        << "  \"dispatches\": [\n";
     size_t idx = 0;
     for (const auto &[did, m] : metrics) {
