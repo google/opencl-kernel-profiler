@@ -44,8 +44,8 @@ if (SPIRV_DISASSEMBLY)
   endif()
 endif()
 
-add_library (opencl-kernel-profiler SHARED src/opencl-kernel-profiler.cpp)
-target_include_directories(opencl-kernel-profiler PUBLIC ${PERFETTO_SDK_PATH})
+add_library (opencl-kernel-profiler SHARED layer/layer.cpp)
+target_include_directories(opencl-kernel-profiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${PERFETTO_SDK_PATH})
 if (OPENCL_HEADER_PATH)
   target_include_directories(opencl-kernel-profiler PUBLIC ${OPENCL_HEADER_PATH})
 endif()
@@ -88,6 +88,33 @@ target_compile_options(opencl-kernel-profiler PUBLIC "-DCLKP_PERFETTO_AMALGAMATE
 install(TARGETS opencl-kernel-profiler
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION bin)
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+  add_executable(clkp-extractor extractor/extractor.cpp)
+  target_include_directories(clkp-extractor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${PERFETTO_SDK_PATH})
+  target_link_libraries(clkp-extractor ${PERFETTO_LIBRARY})
+  target_compile_options(clkp-extractor PUBLIC "-DCLKP_PERFETTO_AMALGAMATED")
+  if (ANDROID)
+    target_link_libraries(clkp-extractor log)
+  endif()
+
+  add_executable(clkp-runner runner/runner.cpp)
+  target_include_directories(clkp-runner PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${PERFETTO_SDK_PATH})
+  if (OPENCL_HEADER_PATH)
+    target_include_directories(clkp-runner PUBLIC ${OPENCL_HEADER_PATH})
+  endif()
+  if (OPENCL_LIBRARY_PATH)
+    target_link_directories(clkp-runner PUBLIC ${OPENCL_LIBRARY_PATH})
+  endif()
+  target_link_libraries(clkp-runner OpenCL ${PERFETTO_LIBRARY})
+  target_compile_options(clkp-runner PUBLIC "-DCLKP_PERFETTO_AMALGAMATED")
+  if (ANDROID)
+    target_link_libraries(clkp-runner log)
+  endif()
+
+  install(TARGETS clkp-extractor clkp-runner
+          RUNTIME DESTINATION bin)
+endif()
 
 if (CLKP_BUILD_TESTS)
   add_subdirectory(tests)

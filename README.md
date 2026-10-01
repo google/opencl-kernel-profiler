@@ -76,8 +76,10 @@ Then run the application using `opencl-kernel-profiler.sh`. This script will tak
   # Wait for the device to reboot, then:
   adb root
   adb remount
+  adb shell mkdir -p /vendor/etc/Khronos/OpenCL/layers/
   adb push $OUT/vendor/lib64/opencl-kernel-profiler.so /vendor/lib64/
   adb push $OUT/vendor/etc/Khronos/OpenCL/layers/opencl-kernel-profiler.lay /vendor/etc/Khronos/OpenCL/layers/
+  adb shell chcon u:object_r:same_process_hal_file:s0 /vendor/lib64/opencl-kernel-profiler.so
   ```
 
 Any application using the `OpenCL-ICD-Loader` will go through the `opencl-kernel-profiler`.

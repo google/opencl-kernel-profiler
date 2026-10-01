@@ -5,6 +5,9 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   format:
     name: Check code formatting
@@ -14,12 +17,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-format clang-format-18
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Check format
         run: |
-          git-clang-format --binary clang-format-18 --diff origin/main --extensions cpp,hpp,c,cl > output.txt
+          git-clang-format --binary clang-format-18 --diff origin/main --extensions cpp,hpp,c,cl > output.txt || true
           cat output.txt
           grep -E "(no modified files to format|clang-format did not modify any files)" output.txt
   build-android:
@@ -27,7 +30,7 @@ jobs:
     needs: format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Install dependencies
@@ -38,12 +41,23 @@ jobs:
         run: |
           git clone --depth 1 --branch v51.2 https://github.com/google/perfetto third_party/perfetto
           git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
+          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-ICD-Loader.git third_party/opencl-icd-loader
       - name: Download and extract Android NDK
         run: |
           wget https://dl.google.com/android/repository/android-ndk-r27d-linux.zip -O android-ndk.zip
           unzip android-ndk.zip -d .
           rm android-ndk.zip
           ls -l
+      - name: Build OpenCL-ICD-Loader
+        shell: bash
+        run: |
+          cmake -B third_party/opencl-icd-loader/build -S third_party/opencl-icd-loader -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$(pwd)/android-ndk-r27d/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="arm64-v8a" \
+            -DANDROID_PLATFORM="35" \
+            -DOPENCL_ICD_LOADER_HEADERS_DIR="$(pwd)/third_party/opencl-headers" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build third_party/opencl-icd-loader/build
       - name: Build
         shell: bash
         run: |
@@ -53,6 +67,7 @@ jobs:
             -DANDROID_PLATFORM="35" \
             -DPERFETTO_SDK_PATH="third_party/perfetto/sdk" \
             -DOPENCL_HEADER_PATH="third_party/opencl-headers" \
+            -DOPENCL_LIBRARY_PATH="$(pwd)/third_party/opencl-icd-loader/build" \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build
   build-macos:
@@ -60,7 +75,7 @@ jobs:
     needs: format
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Clone dependencies
@@ -80,7 +95,7 @@ jobs:
     needs: format
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Clone dependencies
@@ -102,7 +117,7 @@ jobs:
     needs: format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Install dependencies
@@ -110,7 +125,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install ninja-build clang-18
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           variant: ccache
           max-size: 2G
@@ -161,6 +176,7 @@ jobs:
           cmake -B build_debug -S . -G Ninja \
             -DPERFETTO_SDK_PATH="${{ github.workspace }}/third_party/perfetto/sdk/" \
             -DOPENCL_HEADER_PATH="$(pwd)/third_party/opencl-headers" \
+            -DOPENCL_LIBRARY_PATH="$(pwd)/third_party/opencl-icd-loader/build" \
             -DCMAKE_CXX_COMPILER="$(which clang++)" \
             -DCMAKE_BUILD_TYPE=Debug
           cmake --build build_debug
@@ -169,6 +185,7 @@ jobs:
           cmake -B build_release -S . -G Ninja \
             -DPERFETTO_SDK_PATH="${{ github.workspace }}/third_party/perfetto/sdk/" \
             -DOPENCL_HEADER_PATH="$(pwd)/third_party/opencl-headers" \
+            -DOPENCL_LIBRARY_PATH="$(pwd)/third_party/opencl-icd-loader/build" \
             -DCMAKE_CXX_COMPILER="$(which clang++)" \
             -DCMAKE_C_COMPILER="$(which clang)" \
             -DCLKP_BUILD_TESTS=1 \
