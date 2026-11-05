@@ -45,6 +45,7 @@ jobs:
         name: Download Perfetto SDK
         shell: bash
         run: |
+          mkdir -p third_party/perfetto/sdk
           curl -fL "https://github.com/google/perfetto/releases/download/${PERFETTO_VERSION}/perfetto-cpp-sdk-src.zip" -o perfetto-cpp-sdk-src.zip
           unzip -o perfetto-cpp-sdk-src.zip -d third_party/perfetto/sdk
           rm perfetto-cpp-sdk-src.zip
