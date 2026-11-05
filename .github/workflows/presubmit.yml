@@ -16,13 +16,13 @@ jobs:
       - name: Install clang-format
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format clang-format-18
+          sudo apt-get install -y clang-format-18
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Check format
         run: |
-          git-clang-format --binary clang-format-18 --diff origin/main --extensions cpp,hpp,c,cl > output.txt || true
+          git-clang-format-18 --binary clang-format-18 --diff origin/main --extensions cpp,hpp,c,cl > output.txt || true
           cat output.txt
           grep -E "(no modified files to format|clang-format did not modify any files)" output.txt
   build-android:
