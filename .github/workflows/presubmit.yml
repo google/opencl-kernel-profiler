@@ -12,6 +12,7 @@ env:
   PERFETTO_VERSION: v59.1
   NDK_VERSION: r30
   OPENCL_VERSION: v2026.05.29
+  POCL_VERSION: v7.2
 
 jobs:
   format:
@@ -157,14 +158,16 @@ jobs:
           sudo apt-get install -y python3-dev libpython3-dev build-essential ocl-icd-libopencl1 cmake git pkg-config libclang-18-dev clang-18 llvm-18 make ninja-build ocl-icd-libopencl1 ocl-icd-dev ocl-icd-opencl-dev libhwloc-dev zlib1g zlib1g-dev clinfo dialog apt-utils libxml2-dev libclang-cpp18-dev libclang-cpp18 llvm-18-dev llvm-spirv-18
       - name: Build pocl
         run: |
-          git clone --depth 1 --branch v7.0 https://github.com/pocl/pocl.git third_party/pocl
+          git clone --depth 1 --branch "${POCL_VERSION}" https://github.com/pocl/pocl.git third_party/pocl
           cmake -B third_party/pocl/build -S third_party/pocl -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_INSTALL_PREFIX=$(pwd)/third_party/pocl/install \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLC_HOST_CPU=x86-64 \
-            -DCMAKE_CXX_COMPILER="$(which clang++)" \
-            -DCMAKE_C_COMPILER="$(which clang)"
+            -DWITH_LLVM_CONFIG=/usr/bin/llvm-config-18 \
+            -DHOST_LLVM_SPIRV=/usr/bin/llvm-spirv-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_C_COMPILER=clang-18
           cmake --build third_party/pocl/build --target install
       - name: Build SPIRV-Tools
         run: |
