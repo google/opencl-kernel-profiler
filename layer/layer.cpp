@@ -384,7 +384,7 @@ static void writeProgramOnDisk(
         perfetto::DynamicString((const char *)dirname.u8string().c_str()), "program",
         perfetto::DynamicString((const char *)filename.filename().u8string().c_str()));
     CHECK(std::filesystem::exists(dirname), return;
-        , "'%s' does not exist, could not write program on disk", dirname.c_str());
+          , "'%s' does not exist, could not write program on disk", dirname.c_str());
     std::ofstream file(filename, binary ? std::ios::binary | std::ios::trunc : std::ios::trunc);
     CHECK(file.is_open(), return;, "Could not open '%s'", filename.c_str());
     for (unsigned i = 0; i < count; i++) {
@@ -407,7 +407,7 @@ static bool tryDisassembleSpirv(
 
     spvtools::SpirvTools tools(SPV_ENV_OPENCL_2_2);
     CHECK(tools.Disassemble(spirv_data, spirv_words, &disassembly), return false;
-        , "Failed to disassemble SPIR-V for program %s", program_name.c_str());
+          , "Failed to disassemble SPIR-V for program %s", program_name.c_str());
     return true;
 }
 #endif
@@ -1363,10 +1363,10 @@ static void trace_callback(callback_data *data)
     cl_int err;
     err = tdispatch->clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_START, sizeof(start), &start, nullptr);
     CHECK_CL(err, tdispatch->clReleaseEvent(event);
-        return, "clGetEventProfilingInfo(CL_PROFILING_COMMAND_START) failed (%i)", err);
+             return, "clGetEventProfilingInfo(CL_PROFILING_COMMAND_START) failed (%i)", err);
     err = tdispatch->clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_END, sizeof(end), &end, nullptr);
     CHECK_CL(err, tdispatch->clReleaseEvent(event);
-        return, "clGetEventProfilingInfo(CL_PROFILING_COMMAND_END) failed (%i)", err);
+             return, "clGetEventProfilingInfo(CL_PROFILING_COMMAND_END) failed (%i)", err);
     if (end < start) {
         TRACE_EVENT_INSTANT(CLKP_PERFETTO_CATEGORY, perfetto::StaticString("INVALID_TIMESTAMPS"),
             perfetto::Track((uintptr_t)queue), "start", start, "end", end);
