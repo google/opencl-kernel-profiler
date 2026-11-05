@@ -52,7 +52,14 @@ mkdir -p "${KERNELS_DIR}"
 spirv-as "${GPU_SRC_SPVASM_FILE}" -o "${GPU_SPV_FILE}" --target-env spv1.2
 spirv-dis --no-header --no-indent "${GPU_SPV_FILE}" -o "${GPU_SPVASM_FILE}"
 
-CLKP_TRACE_DEST="${TMP_DIR}/trace" CLKP_KERNEL_DIR="${TMP_DIR}/kernels" "${CLKP_HOST_TEST}" "${GPU_SRC_FILE}" "${GPU_SPV_FILE}"
+CLKP_LOGCAT=1 CLKP_TRACE_DEST="${TMP_DIR}/trace" CLKP_KERNEL_DIR="${TMP_DIR}/kernels" "${CLKP_HOST_TEST}" "${GPU_SRC_FILE}" "${GPU_SPV_FILE}" 2> "${TMP_DIR}/logcat.txt"
+cat "${TMP_DIR}/logcat.txt"
+grep -F "STAGE=INIT" "${TMP_DIR}/logcat.txt"
+grep -F "STAGE=ENUM api=clGetPlatformIDs" "${TMP_DIR}/logcat.txt"
+grep -F "STAGE=ENUM api=clGetDeviceIDs" "${TMP_DIR}/logcat.txt"
+grep -F "STAGE=CONTEXT" "${TMP_DIR}/logcat.txt"
+grep -F "STAGE=BUILD api=clBuildProgram" "${TMP_DIR}/logcat.txt"
+grep -F "STAGE=DISPATCH api=clEnqueueNDRangeKernel" "${TMP_DIR}/logcat.txt"
 
 echo "SELECT name FROM slice WHERE slice.category='clkp'" \
     | "${TRACE_PROCESSOR_SHELL}" -q /dev/stdin "${TRACE_FILE}" \
