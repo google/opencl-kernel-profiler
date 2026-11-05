@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+env:
+  PERFETTO_VERSION: v59.1
+  NDK_VERSION: r30
+  OPENCL_VERSION: v2026.05.29
+  POCL_VERSION: v7.2
+
 jobs:
   format:
     name: Check code formatting
@@ -16,13 +22,14 @@ jobs:
       - name: Install clang-format
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format clang-format-18
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+          sudo apt-get install -y clang-format-18
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Check format
         run: |
-          git-clang-format --binary clang-format-18 --diff origin/main --extensions cpp,hpp,c,cl > output.txt || true
+          git-clang-format-18 --binary clang-format-18 --diff origin/main --extensions cpp,hpp,c,cl > output.txt || true
           cat output.txt
           grep -E "(no modified files to format|clang-format did not modify any files)" output.txt
   build-android:
@@ -30,21 +37,32 @@ jobs:
     needs: format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
+      - *checkout
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install ninja-build
-      - name: Clone dependencies
+      - &get-perfetto-sdk
+        name: Download Perfetto SDK
+        shell: bash
         run: |
-          git clone --depth 1 --branch v51.2 https://github.com/google/perfetto third_party/perfetto
-          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
-          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-ICD-Loader.git third_party/opencl-icd-loader
+          mkdir -p third_party/perfetto/sdk
+          curl -fL "https://github.com/google/perfetto/releases/download/${PERFETTO_VERSION}/perfetto-cpp-sdk-src.zip" -o perfetto-cpp-sdk-src.zip
+          unzip -o perfetto-cpp-sdk-src.zip -d third_party/perfetto/sdk
+          rm perfetto-cpp-sdk-src.zip
+      - &get-opencl-headers
+        name: Clone OpenCL-Headers
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "${OPENCL_VERSION}" https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
+      - &get-opencl-icd-loader
+        name: Clone OpenCL-ICD-Loader
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "${OPENCL_VERSION}" https://github.com/KhronosGroup/OpenCL-ICD-Loader.git third_party/opencl-icd-loader
       - name: Download and extract Android NDK
         run: |
-          wget https://dl.google.com/android/repository/android-ndk-r27d-linux.zip -O android-ndk.zip
+          wget "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" -O android-ndk.zip
           unzip android-ndk.zip -d .
           rm android-ndk.zip
           ls -l
@@ -52,7 +70,7 @@ jobs:
         shell: bash
         run: |
           cmake -B third_party/opencl-icd-loader/build -S third_party/opencl-icd-loader -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$(pwd)/android-ndk-r27d/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_TOOLCHAIN_FILE="$(pwd)/android-ndk-${NDK_VERSION}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="arm64-v8a" \
             -DANDROID_PLATFORM="35" \
             -DOPENCL_ICD_LOADER_HEADERS_DIR="$(pwd)/third_party/opencl-headers" \
@@ -62,7 +80,7 @@ jobs:
         shell: bash
         run: |
           cmake -B build -S . -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="android-ndk-r27d/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_TOOLCHAIN_FILE="android-ndk-${NDK_VERSION}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="arm64-v8a" \
             -DANDROID_PLATFORM="35" \
             -DPERFETTO_SDK_PATH="third_party/perfetto/sdk" \
@@ -75,13 +93,9 @@ jobs:
     needs: format
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-      - name: Clone dependencies
-        run: |
-          git clone --depth 1 --branch v51.2 https://github.com/google/perfetto third_party/perfetto
-          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
+      - *checkout
+      - *get-perfetto-sdk
+      - *get-opencl-headers
       - name: Build
         shell: bash
         run: |
@@ -95,15 +109,9 @@ jobs:
     needs: format
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-      - name: Clone dependencies
-        run: |
-          git clone --depth 1 --branch v51.2 https://github.com/google/perfetto third_party/perfetto
-          git -C third_party/perfetto apply ../../.github/workflows/perfetto_mingw.patch
-          git -C third_party/perfetto apply ../../.github/workflows/header_mingw.patch
-          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
+      - *checkout
+      - *get-perfetto-sdk
+      - *get-opencl-headers
       - name: Build
         shell: bash
         run: |
@@ -117,9 +125,7 @@ jobs:
     needs: format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
+      - *checkout
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -131,14 +137,15 @@ jobs:
           max-size: 2G
       - name: Build Perfetto
         run: |
-          git clone --depth 1 --branch v51.2 https://github.com/google/perfetto third_party/perfetto
+          git clone --depth 1 --branch "${PERFETTO_VERSION}" https://github.com/google/perfetto third_party/perfetto
           $(pwd)/third_party/perfetto/tools/install-build-deps
           $(pwd)/third_party/perfetto/tools/setup_all_configs.py --ccache
           $(pwd)/third_party/perfetto/tools/ninja -C $(pwd)/third_party/perfetto/out/linux_clang_release trace_processor_shell
+      - *get-perfetto-sdk
+      - *get-opencl-headers
+      - *get-opencl-icd-loader
       - name: Build OpenCL-ICD-Loader
         run: |
-          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-Headers.git third_party/opencl-headers
-          git clone --depth 1 --branch v2026.05.29 https://github.com/KhronosGroup/OpenCL-ICD-Loader.git third_party/opencl-icd-loader
           cmake -B third_party/opencl-icd-loader/build -S third_party/opencl-icd-loader -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DOPENCL_ICD_LOADER_HEADERS_DIR=$(pwd)/third_party/opencl-headers \
@@ -151,14 +158,16 @@ jobs:
           sudo apt-get install -y python3-dev libpython3-dev build-essential ocl-icd-libopencl1 cmake git pkg-config libclang-18-dev clang-18 llvm-18 make ninja-build ocl-icd-libopencl1 ocl-icd-dev ocl-icd-opencl-dev libhwloc-dev zlib1g zlib1g-dev clinfo dialog apt-utils libxml2-dev libclang-cpp18-dev libclang-cpp18 llvm-18-dev llvm-spirv-18
       - name: Build pocl
         run: |
-          git clone --depth 1 --branch v7.0 https://github.com/pocl/pocl.git third_party/pocl
+          git clone --depth 1 --branch "${POCL_VERSION}" https://github.com/pocl/pocl.git third_party/pocl
           cmake -B third_party/pocl/build -S third_party/pocl -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_INSTALL_PREFIX=$(pwd)/third_party/pocl/install \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLC_HOST_CPU=x86-64 \
-            -DCMAKE_CXX_COMPILER="$(which clang++)" \
-            -DCMAKE_C_COMPILER="$(which clang)"
+            -DWITH_LLVM_CONFIG=/usr/bin/llvm-config-18 \
+            -DHOST_LLVM_SPIRV=/usr/bin/llvm-spirv-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_C_COMPILER=clang-18
           cmake --build third_party/pocl/build --target install
       - name: Build SPIRV-Tools
         run: |

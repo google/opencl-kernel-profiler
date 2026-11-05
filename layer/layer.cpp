@@ -39,6 +39,9 @@
 #ifdef SPIRV_DISASSEMBLY
 #include <spirv-tools/libspirv.hpp>
 #endif
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 
 /*****************************************************************************/
 /* PERFETTO GLOBAL VARIABLES *************************************************/
@@ -69,10 +72,18 @@ static const struct _cl_icd_dispatch *tdispatch;
         __android_log_print(                                                                                           \
             android_LogPriority::ANDROID_LOG_ERROR, "CLKP", " %s: " message "\n", __func__, ##__VA_ARGS__);            \
     } while (0)
+#define PRINT_STAGE(message, ...)                                                                                      \
+    do {                                                                                                               \
+        __android_log_print(android_LogPriority::ANDROID_LOG_INFO, "CLKP", "STAGE=" message "\n", ##__VA_ARGS__);      \
+    } while (0)
 #else
 #define PRINT(message, ...)                                                                                            \
     do {                                                                                                               \
         fprintf(stderr, "[CLKP] %s: " message "\n", __func__, ##__VA_ARGS__);                                          \
+    } while (0)
+#define PRINT_STAGE(message, ...)                                                                                      \
+    do {                                                                                                               \
+        fprintf(stderr, "[CLKP] STAGE=" message "\n", ##__VA_ARGS__);                                                  \
     } while (0)
 #endif
 #define CHECK(test, statement, message, ...)                                                                           \
@@ -84,6 +95,28 @@ static const struct _cl_icd_dispatch *tdispatch;
     } while (0)
 #define CHECK_CL(err, statement, message, ...) CHECK((err) == CL_SUCCESS, statement, message, ##__VA_ARGS__)
 #define CHECK_ALLOC(ptr, statement) CHECK(ptr != nullptr, statement, "allocation failed")
+
+static bool is_logcat_enabled()
+{
+    const char *env = getenv("CLKP_LOGCAT");
+    if (env != nullptr && strcmp(env, "0") != 0 && strcmp(env, "") != 0) {
+        return true;
+    }
+#ifdef __ANDROID__
+    char prop[PROP_VALUE_MAX] = { 0 };
+    if (__system_property_get("debug.clkp.logcat", prop) > 0) {
+        return strcmp(prop, "0") != 0 && strcmp(prop, "false") != 0;
+    }
+#endif
+    return false;
+}
+
+#define LOG_STAGE(message, ...)                                                                                        \
+    do {                                                                                                               \
+        if (is_logcat_enabled()) {                                                                                     \
+            PRINT_STAGE(message, ##__VA_ARGS__);                                                                       \
+        }                                                                                                              \
+    } while (0)
 
 /*****************************************************************************/
 /* STATE TRACKING & SYNTHETIC IDS ********************************************/
@@ -171,6 +204,22 @@ static std::map<cl_kernel, cl_program> kernel_to_program;
 static std::map<cl_command_buffer_khr, std::vector<cl_command_queue>> cmdbuf_to_queues;
 static std::map<cl_command_buffer_khr, uint64_t> cmdbuf_to_context_id;
 static std::map<cl_command_queue, uint64_t> queue_to_context_id;
+static std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_dispatch_log;
+
+static bool should_log_dispatch(const std::string &key)
+{
+    if (!is_logcat_enabled()) {
+        return false;
+    }
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    auto it = g_last_dispatch_log.find(key);
+    if (it != g_last_dispatch_log.end() && (now - it->second) < std::chrono::seconds(1)) {
+        return false;
+    }
+    g_last_dispatch_log[key] = now;
+    return true;
+}
 
 static std::string size_array_to_string(const size_t *arr, cl_uint count)
 {
@@ -223,8 +272,26 @@ template <typename PropT> static std::string properties_to_string(const PropT *p
 }
 
 /*****************************************************************************/
-/* CONTEXT LIFECYCLE *********************************************************/
+/* PLATFORM, DEVICE & CONTEXT LIFECYCLE **************************************/
 /*****************************************************************************/
+
+static cl_int clkp_clGetPlatformIDs(cl_uint num_entries, cl_platform_id *platforms, cl_uint *num_platforms)
+{
+    cl_int err = tdispatch->clGetPlatformIDs(num_entries, platforms, num_platforms);
+    cl_uint count = (num_platforms != nullptr && err == CL_SUCCESS) ? *num_platforms : num_entries;
+    LOG_STAGE("ENUM api=clGetPlatformIDs count=%u err=%d", count, err);
+    return err;
+}
+
+static cl_int clkp_clGetDeviceIDs(cl_platform_id platform, cl_device_type device_type, cl_uint num_entries,
+    cl_device_id *devices, cl_uint *num_devices)
+{
+    cl_int err = tdispatch->clGetDeviceIDs(platform, device_type, num_entries, devices, num_devices);
+    cl_uint count = (num_devices != nullptr && err == CL_SUCCESS) ? *num_devices : num_entries;
+    LOG_STAGE("ENUM api=clGetDeviceIDs type=0x%llx count=%u err=%d", static_cast<unsigned long long>(device_type),
+        count, err);
+    return err;
+}
 
 static cl_context clkp_clCreateContext(const cl_context_properties *properties, cl_uint num_devices,
     const cl_device_id *devices,
@@ -240,11 +307,16 @@ static cl_context clkp_clCreateContext(const cl_context_properties *properties, 
     }
     TRACE_EVENT(
         CLKP_PERFETTO_CATEGORY, "clCreateContext", "call_id", cid, "context_id", ctx_id, "num_devices", num_devices);
-    cl_context ctx = tdispatch->clCreateContext(properties, num_devices, devices, pfn_notify, user_data, errcode_ret);
+    cl_int local_err = CL_SUCCESS;
+    cl_context ctx = tdispatch->clCreateContext(
+        properties, num_devices, devices, pfn_notify, user_data, errcode_ret ? errcode_ret : &local_err);
+    cl_int err = errcode_ret ? *errcode_ret : (ctx != nullptr ? CL_SUCCESS : local_err);
     {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         g_context_ids.bind(ctx, ctx_id);
     }
+    LOG_STAGE("CONTEXT api=clCreateContext context_id=%llu num_devices=%u err=%d",
+        static_cast<unsigned long long>(ctx_id), num_devices, err);
     return ctx;
 }
 
@@ -261,11 +333,16 @@ static cl_context clkp_clCreateContextFromType(const cl_context_properties *prop
     }
     TRACE_EVENT(CLKP_PERFETTO_CATEGORY, "clCreateContextFromType", "call_id", cid, "context_id", ctx_id, "device_type",
         static_cast<uint64_t>(device_type));
-    cl_context ctx = tdispatch->clCreateContextFromType(properties, device_type, pfn_notify, user_data, errcode_ret);
+    cl_int local_err = CL_SUCCESS;
+    cl_context ctx = tdispatch->clCreateContextFromType(
+        properties, device_type, pfn_notify, user_data, errcode_ret ? errcode_ret : &local_err);
+    cl_int err = errcode_ret ? *errcode_ret : (ctx != nullptr ? CL_SUCCESS : local_err);
     {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         g_context_ids.bind(ctx, ctx_id);
     }
+    LOG_STAGE("CONTEXT api=clCreateContextFromType context_id=%llu type=0x%llx err=%d",
+        static_cast<unsigned long long>(ctx_id), static_cast<unsigned long long>(device_type), err);
     return ctx;
 }
 
@@ -568,7 +645,12 @@ static cl_int clkp_clBuildProgram(cl_program program, cl_uint num_devices, const
     std::string opts = options ? options : "";
     TRACE_EVENT(CLKP_PERFETTO_CATEGORY, "clBuildProgram", "call_id", cid, "program_id", prog_id, "program",
         perfetto::DynamicString(prog_str), "options", perfetto::DynamicString(opts));
-    return tdispatch->clBuildProgram(program, num_devices, device_list, options, pfn_notify, user_data);
+    LOG_STAGE("BUILD_START api=clBuildProgram prog_id=%llu program=%s options=\"%s\"",
+        static_cast<unsigned long long>(prog_id), prog_str.c_str(), opts.c_str());
+    cl_int err = tdispatch->clBuildProgram(program, num_devices, device_list, options, pfn_notify, user_data);
+    LOG_STAGE("BUILD api=clBuildProgram prog_id=%llu program=%s err=%d options=\"%s\"",
+        static_cast<unsigned long long>(prog_id), prog_str.c_str(), err, opts.c_str());
+    return err;
 }
 
 static cl_int clkp_clCompileProgram(cl_program program, cl_uint num_devices, const cl_device_id *device_list,
@@ -601,8 +683,11 @@ static cl_int clkp_clCompileProgram(cl_program program, cl_uint num_devices, con
         perfetto::DynamicString(prog_str), "options", perfetto::DynamicString(opts), "num_input_headers",
         num_input_headers, "header_program_ids", perfetto::DynamicString(header_ids_str), "header_include_names",
         perfetto::DynamicString(header_names_str));
-    return tdispatch->clCompileProgram(program, num_devices, device_list, options, num_input_headers, input_headers,
-        header_include_names, pfn_notify, user_data);
+    cl_int err = tdispatch->clCompileProgram(program, num_devices, device_list, options, num_input_headers,
+        input_headers, header_include_names, pfn_notify, user_data);
+    LOG_STAGE("BUILD api=clCompileProgram prog_id=%llu program=%s err=%d", static_cast<unsigned long long>(prog_id),
+        prog_str.c_str(), err);
+    return err;
 }
 
 static cl_program clkp_clLinkProgram(cl_context context, cl_uint num_devices, const cl_device_id *device_list,
@@ -631,14 +716,18 @@ static cl_program clkp_clLinkProgram(cl_context context, cl_uint num_devices, co
     TRACE_EVENT(CLKP_PERFETTO_CATEGORY, "clLinkProgram", "call_id", cid, "context_id", ctx_id, "program_id", prog_id,
         "program", perfetto::DynamicString(program_str), "options", perfetto::DynamicString(opts), "num_input_programs",
         num_input_programs, "input_program_ids", perfetto::DynamicString(input_ids_str));
+    cl_int local_err = CL_SUCCESS;
     cl_program program = tdispatch->clLinkProgram(context, num_devices, device_list, options, num_input_programs,
-        input_programs, pfn_notify, user_data, errcode_ret);
+        input_programs, pfn_notify, user_data, errcode_ret ? errcode_ret : &local_err);
+    cl_int err = errcode_ret ? *errcode_ret : (program != nullptr ? CL_SUCCESS : local_err);
     {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         g_program_ids.bind(program, prog_id);
         program_to_string[program] = program_str;
         program_to_context_id[program] = ctx_id;
     }
+    LOG_STAGE("BUILD api=clLinkProgram prog_id=%llu program=%s err=%d", static_cast<unsigned long long>(prog_id),
+        program_str.c_str(), err);
     return program;
 }
 
@@ -1209,8 +1298,19 @@ struct ThreadInfo {
     int pending_callbacks;
 };
 
+struct QueueThreadMap : public std::map<cl_command_queue, std::thread> {
+    ~QueueThreadMap()
+    {
+        for (auto &kv : *this) {
+            if (kv.second.joinable()) {
+                kv.second.detach();
+            }
+        }
+    }
+};
+
 static std::map<cl_command_queue, ThreadInfo *> queue_to_thread_info;
-static std::map<cl_command_queue, std::thread> queue_to_thread;
+static QueueThreadMap queue_to_thread;
 static std::map<cl_command_queue, int64_t> queue_to_time_offset;
 static std::map<cl_command_queue, uint32_t> queue_to_refcount;
 
@@ -1425,6 +1525,14 @@ static cl_int clkp_clEnqueueNDRangeKernel(cl_command_queue command_queue, cl_ker
 
     cl_int err = tdispatch->clEnqueueNDRangeKernel(command_queue, kernel, work_dim, global_work_offset,
         global_work_size, local_work_size, num_events_in_wait_list, event_wait_list, event_to_use);
+
+    if (should_log_dispatch("clEnqueueNDRangeKernel:" + program_string + ":" + kernel_name)) {
+        PRINT_STAGE(
+            "DISPATCH api=clEnqueueNDRangeKernel dispatch_id=%llu prog_id=%llu program=%s kernel=%s gws=[%s] lws=[%s] "
+            "err=%d",
+            static_cast<unsigned long long>(did), static_cast<unsigned long long>(prog_id), program_string.c_str(),
+            kernel_name.c_str(), gws_str.c_str(), lws_str.c_str(), err);
+    }
 
     if (err != CL_SUCCESS) {
         return err;
@@ -2515,6 +2623,11 @@ static cl_int CL_API_CALL clkp_clEnqueueCommandBufferKHR(cl_uint num_queues, cl_
     cl_int err = g_ext.clEnqueueCommandBufferKHR(
         num_queues, queues, command_buffer, num_events_in_wait_list, event_wait_list, event_to_use);
 
+    if (should_log_dispatch("clEnqueueCommandBufferKHR:" + std::to_string(cb_id))) {
+        PRINT_STAGE("DISPATCH api=clEnqueueCommandBufferKHR dispatch_id=%llu cmdbuf_id=%llu queues=[%s] err=%d",
+            static_cast<unsigned long long>(did), static_cast<unsigned long long>(cb_id), q_ids_str.c_str(), err);
+    }
+
     int64_t time_offset = 0;
     uint64_t target_q_id = 0;
     {
@@ -2910,6 +3023,15 @@ static cl_int CL_API_CALL clkp_clCommandNDRangeKernelKHR(cl_command_buffer_khr c
         global_work_offset, global_work_size, local_work_size, num_sync_points_in_wait_list, sync_point_wait_list,
         sync_point, mutable_handle);
 
+    if (should_log_dispatch("clCommandNDRangeKernelKHR:" + program_string + ":" + kernel_name)) {
+        PRINT_STAGE(
+            "DISPATCH api=clCommandNDRangeKernelKHR dispatch_id=%llu cmdbuf_id=%llu prog_id=%llu program=%s kernel=%s "
+            "gws=[%s] lws=[%s] err=%d",
+            static_cast<unsigned long long>(did), static_cast<unsigned long long>(cb_id),
+            static_cast<unsigned long long>(prog_id), program_string.c_str(), kernel_name.c_str(), gws_str.c_str(),
+            lws_str.c_str(), err);
+    }
+
     uint64_t ret_sp = (err == CL_SUCCESS && sync_point != nullptr) ? static_cast<uint64_t>(*sync_point) : 0;
     uint64_t mut_id = 0;
     if (err == CL_SUCCESS && mutable_handle != nullptr) {
@@ -3121,7 +3243,10 @@ CL_API_ENTRY cl_int CL_API_CALL clInitLayerWithProperties(cl_uint num_entries, c
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     if (!target_dispatch || !num_entries_out || !layer_dispatch_ret)
         return CL_INVALID_VALUE;
-    if (num_entries < sizeof(dispatch) / sizeof(dispatch.clGetPlatformIDs))
+    const cl_uint layer_entries = sizeof(dispatch) / sizeof(dispatch.clGetPlatformIDs);
+    const cl_uint min_opencl30_entries
+        = offsetof(struct _cl_icd_dispatch, clSetContextDestructorCallback) / sizeof(void *) + 1;
+    if (num_entries < std::min(layer_entries, min_opencl30_entries))
         return CL_INVALID_VALUE;
 
     perfetto::TracingInitArgs args;
@@ -3156,6 +3281,8 @@ CL_API_ENTRY cl_int CL_API_CALL clInitLayerWithProperties(cl_uint num_entries, c
     }
 
     memset(&dispatch, 0, sizeof(dispatch));
+    dispatch.clGetPlatformIDs = clkp_clGetPlatformIDs;
+    dispatch.clGetDeviceIDs = clkp_clGetDeviceIDs;
     dispatch.clCreateContext = clkp_clCreateContext;
     dispatch.clCreateContextFromType = clkp_clCreateContextFromType;
     dispatch.clRetainContext = clkp_clRetainContext;
@@ -3237,7 +3364,9 @@ CL_API_ENTRY cl_int CL_API_CALL clInitLayerWithProperties(cl_uint num_entries, c
 
     tdispatch = target_dispatch;
     *layer_dispatch_ret = &dispatch;
-    *num_entries_out = sizeof(dispatch) / sizeof(dispatch.clGetPlatformIDs);
+    *num_entries_out = std::min(num_entries, layer_entries);
+
+    LOG_STAGE("INIT version=1");
 
     return CL_SUCCESS;
 }

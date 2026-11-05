@@ -95,6 +95,7 @@ The profiler can be configured at runtime using the following environment variab
 * `CLKP_TRACE_MAX_SIZE` (InProcess backend only): Maximum size of the trace buffer in KB. (Default: `1024`).
 * `CLKP_KERNEL_DIR`: Directory path where kernel sources, binaries, and IL will be dumped. If not set, dumping is disabled.
 * `CLKP_DISABLE_PROGRAM_BINARY_CACHE`: When set to `1`, reports zero size for `CL_PROGRAM_BINARY_SIZES` in `clGetProgramInfo` so applications fall back to `clCreateProgramWithSource` or `clCreateProgramWithIL`.
+* `CLKP_LOGCAT` (or Android system property `debug.clkp.logcat`): When set to `1`, emits structured `STAGE=INIT|ENUM|CONTEXT|BUILD|DISPATCH` lines to `logcat` (tag `CLKP` on Android) or `stderr` (on Linux/ChromeOS) so automation tools can detect OpenCL initialization, enumeration, compilation, and actual kernel execution without parsing Perfetto traces.
 
 # Using the Trace
 
